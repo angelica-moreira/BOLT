@@ -196,4 +196,3 @@ public:
 } // namespace llvm
 
 #endif /* LLVM_TOOLS_LLVM_BOLT_PASSES_STATICBRANCHPROBABILITIES_H_ */
-

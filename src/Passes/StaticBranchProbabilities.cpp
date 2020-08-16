@@ -18,293 +18,350 @@
 namespace llvm {
 namespace bolt {
 
-PredictionInfo BranchHeuristicsInfo::getApplicableHeuristic(
-    BranchHeuristics BH, BinaryBasicBlock *BB,
-    DominatorAnalysis<true> &PDA) const {
-  switch (BH) {
-  case LOOP_BRANCH_HEURISTIC:
-    return loopBranchHeuristic(BB);
-  case POINTER_HEURISTIC:
-    return pointerHeuristic(BB);
-  case CALL_HEURISTIC:
-    return callHeuristic(BB, PDA);
-  case OPCODE_HEURISTIC:
-    return opcodeHeuristic(BB);
-  case LOOP_EXIT_HEURISTIC:
-    return loopExitHeuristic(BB);
-  case RETURN_HEURISTIC:
-    return returnHeuristic(BB);
-  case STORE_HEURISTIC:
-    return storeHeuristic(BB, PDA);
-  case LOOP_HEADER_HEURISTIC:
-    return loopHeaderHeuristic(BB, PDA);
-  case GUARD_HEURISTIC:
-    return guardHeuristic(BB);
+double
+StaticBranchProbabilities::getCFGBackEdgeProbability(BinaryBasicBlock &SrcBB,
+                                                     BinaryBasicBlock &DstBB) {
+  Edge CFGEdge = std::make_pair(SrcBB.getLabel(), DstBB.getLabel());
+  auto It = CFGBackEdgeProbabilities.find(CFGEdge);
+  if (It != CFGBackEdgeProbabilities.end()) {
+    if (static_cast<int64_t>(It->second) < 0 ||
+        static_cast<int64_t>(It->second) == INT64_MAX)
+      return 0.0;
+    return It->second;
+  }
+
+  auto Function = SrcBB.getFunction();
+  return getCFGEdgeProbability(CFGEdge, Function);
+}
+
+void StaticBranchProbabilities::setCFGBackEdgeProbability(Edge &CFGEdge,
+                                                          double Prob) {
+  if (static_cast<int64_t>(Prob) < 0 || static_cast<int64_t>(Prob) == INT64_MAX)
+    CFGBackEdgeProbabilities[CFGEdge] = 0.0;
+  CFGBackEdgeProbabilities[CFGEdge] = Prob;
+}
+
+double
+StaticBranchProbabilities::getCFGEdgeProbability(Edge &CFGEdge,
+                                                 BinaryFunction *Function) {
+  auto It = CFGEdgeProbabilities.find(CFGEdge);
+  if (It != CFGEdgeProbabilities.end()) {
+    if (static_cast<int64_t>(It->second) < 0 ||
+        static_cast<int64_t>(It->second) == INT64_MAX)
+      return 0;
+    return It->second;
+  }
+
+  auto *BB = Function->getBasicBlockForLabel(CFGEdge.first);
+  auto &BC = Function->getBinaryContext();
+  auto LastInst = BB->getLastNonPseudoInstr();
+
+  if (LastInst && BC.MIB->isConditionalBranch(*LastInst))
+    return 0.5;
+
+  return 1.0;
+}
+
+double
+StaticBranchProbabilities::getCFGEdgeProbability(BinaryBasicBlock &SrcBB,
+                                                 BinaryBasicBlock &DstBB) {
+  Edge CFGEdge = std::make_pair(SrcBB.getLabel(), DstBB.getLabel());
+
+  auto Function = SrcBB.getFunction();
+
+  return getCFGEdgeProbability(CFGEdge, Function);
+}
+
+void StaticBranchProbabilities::clear() {
+  BSI->clear();
+  CFGBackEdgeProbabilities.clear();
+  CFGEdgeProbabilities.clear();
+}
+
+void StaticBranchProbabilities::parseProbabilitiesFile(
+    std::unique_ptr<MemoryBuffer> MemBuf, BinaryContext &BC) {
+
+  std::vector<BasicBlockOffset> BasicBlockOffsets;
+  auto populateBasicBlockOffsets =
+      [&](BinaryFunction &Function,
+          std::vector<BasicBlockOffset> &BasicBlockOffsets) {
+        for (auto &BB : Function) {
+          BasicBlockOffsets.emplace_back(
+              std::make_pair(BB.getInputOffset(), &BB));
+        }
+      };
+
+  auto getBasicBlockAtOffset = [&](uint64_t Offset) -> BinaryBasicBlock * {
+    if (BasicBlockOffsets.empty())
+      return nullptr;
+
+    auto It = std::upper_bound(
+        BasicBlockOffsets.begin(), BasicBlockOffsets.end(),
+        BasicBlockOffset(Offset, nullptr), CompareBasicBlockOffsets());
+    assert(It != BasicBlockOffsets.begin() &&
+           "first basic block not at offset 0");
+    --It;
+    auto *BB = It->second;
+    return (Offset == BB->getInputOffset()) ? BB : nullptr;
+  };
+
+  auto ParsingBuf = MemBuf.get()->getBuffer();
+  BinaryFunction *Function = nullptr;
+  while (ParsingBuf.size() > 0) {
+    auto LineEnd = ParsingBuf.find_first_of("\n");
+    if (LineEnd == StringRef::npos) {
+      errs() << "BOLT-ERROR: File not in the correct format.\n";
+      exit(1);
+    }
+
+    StringRef Line = ParsingBuf.substr(0, LineEnd);
+    auto Type = Line.split(" ");
+    if (!Type.first.equals("EDGE") && !Type.first.equals("FUNCTION") &&
+        !Line.equals("END")) {
+      errs() << "BOLT-ERROR: File not in the correct format, found: " << Line
+             << "\n";
+      exit(1);
+    }
+
+    if (Type.first.equals("FUNCTION")) {
+      clear();
+      BasicBlockOffsets.clear();
+      auto FunLine = Type.second.split(" ");
+      StringRef NumStr = FunLine.second;
+      uint64_t FunctionAddress;
+      if (NumStr.getAsInteger(16, FunctionAddress)) {
+        errs() << "BOLT-ERROR: File not in the correct format.\n";
+        exit(1);
+      }
+
+      Function = BC.getBinaryFunctionAtAddress(FunctionAddress);
+      if (Function)
+        populateBasicBlockOffsets(*Function, BasicBlockOffsets);
+      
+    }
+
+    if (!Function){
+      ParsingBuf = ParsingBuf.drop_front(LineEnd + 1);
+      continue;
+    }
+    
+    if (Type.first.equals("EDGE")) {
+      auto EdgeLine = Type.second.split(" ");
+
+      StringRef SrcBBAddressStr = EdgeLine.first;
+      uint64_t SrcBBAddress;
+  
+      if (SrcBBAddressStr.getAsInteger(16, SrcBBAddress)) {
+        errs() << "BOLT-ERROR: File not in the correct format.\n";
+        exit(1);
+      }
+
+      auto SrcBB = getBasicBlockAtOffset(SrcBBAddress);
+
+      auto EdgeInfo = EdgeLine.second.split(" ");
+      StringRef DstBBAddressStr = EdgeInfo.first;
+      uint64_t DstBBAddress;
+      
+      if (DstBBAddressStr.getAsInteger(16, DstBBAddress)) {
+        errs() << "BOLT-ERROR: File not in the correct format.\n";
+        exit(1);
+      }
+
+      auto DstBB = getBasicBlockAtOffset(DstBBAddress);
+
+      if (SrcBB && DstBB) {
+        uint64_t Prob;
+        StringRef ProbStr = EdgeInfo.second;
+
+        if (ProbStr.getAsInteger(10, Prob)) {
+          errs() << "BOLT-ERROR: File not in the correct format.\n";
+          exit(1);
+        }
+
+        SrcBB->setSuccessorBranchInfo(*DstBB, Prob, 0);
+      }
+    } else if (Line.equals("END")) {
+      BasicBlockOffsets.clear();
+      Function->setExecutionCount(1);
+    }
+    
+    ParsingBuf = ParsingBuf.drop_front(LineEnd + 1);
   }
 }
 
-PredictionInfo
-BranchHeuristicsInfo::loopBranchHeuristic(BinaryBasicBlock *BB) const {
-  bool Applies = false;
-  PredictionInfo Prediction;
+void StaticBranchProbabilities::computeProbabilities(BinaryFunction &Function) {
+  Function.setExecutionCount(1);
 
-  BinaryBasicBlock *TakenSucc = BB->getConditionalSuccessor(true);
-  BinaryBasicBlock *FallthroughSucc = BB->getConditionalSuccessor(false);
-
-  // If the taken branch is a back edge to a loop's head or
-  // the not taken branch is an exit edge, the heuristic applies to
-  // the conditional branch
-  if ((BPI->isBackEdge(BB, TakenSucc) && BPI->isLoopHeader(TakenSucc)) ||
-      BPI->isExitEdge(BB, FallthroughSucc)) {
-    Applies = true;
-    Prediction = std::make_pair(TakenSucc, FallthroughSucc);
+  double EdgeProbTaken = 0.5;
+  switch (opts::HeuristicBased) {
+  case bolt::StaticBranchProbabilities::H_ALWAYS_TAKEN:
+    EdgeProbTaken = 1.0;
+    break;
+  case bolt::StaticBranchProbabilities::H_NEVER_TAKEN:
+    EdgeProbTaken = 0.0;
+    break;
+  case bolt::StaticBranchProbabilities::H_WEAKLY_TAKEN:
+    EdgeProbTaken = 0.2;
+    break;
+  case bolt::StaticBranchProbabilities::H_WEAKLY_NOT_TAKEN:
+    EdgeProbTaken = 0.8;
+    break;
+  default:
+    EdgeProbTaken = 0.5;
+    break;
   }
 
-  // Checks the opposite situation, to verify if the premisse holds.
-  if ((BPI->isBackEdge(BB, FallthroughSucc) &&
-       BPI->isLoopHeader(FallthroughSucc)) ||
-      BPI->isExitEdge(BB, TakenSucc)) {
+  double EdgeProbNotTaken = 1 - EdgeProbTaken;
 
-    // If the heuristic applies to both branches, predict none.
-    if (Applies)
-      return NONE;
+  for (auto &BB : Function) {
+    BB.setExecutionCount(0);
 
-    Applies = true;
-    Prediction = std::make_pair(FallthroughSucc, TakenSucc);
-  }
+    if (BB.succ_size() == 0)
+      continue;
 
-  return (Applies ? Prediction : NONE);
-}
+    if (BB.succ_size() == 1) {
+      BinaryBasicBlock *SuccBB = *BB.succ_begin();
 
-PredictionInfo
-BranchHeuristicsInfo::pointerHeuristic(BinaryBasicBlock *BB) const {
-  // TO-DO
-  return NONE;
-}
+      BB.setSuccessorBranchInfo(*SuccBB, 0.0, 0.0);
+      Edge CFGEdge = std::make_pair(BB.getLabel(), SuccBB->getLabel());
 
-PredictionInfo
-BranchHeuristicsInfo::callHeuristic(BinaryBasicBlock *BB,
-                                    DominatorAnalysis<true> &PDA) const {
-  bool Applies = false;
-  PredictionInfo Prediction;
+      // Since it is an unconditional branch, when this branch is reached
+      // it has a chance of 100% of being taken (1.0).
+      CFGEdgeProbabilities[CFGEdge] = 1.0;
+    } else if (opts::MLBased) {
+      for (BinaryBasicBlock *SuccBB : BB.successors()) {
+        uint64_t Frequency = BB.getBranchInfo(*SuccBB).Count;
+        double EdgeProb = (Frequency == UINT64_MAX)
+                              ? 0
+                              : Frequency / DIVISOR;
+        Edge CFGEdge = std::make_pair(BB.getLabel(), SuccBB->getLabel());
+        CFGEdgeProbabilities[CFGEdge] = EdgeProb;
+        BB.setSuccessorBranchInfo(*SuccBB, 0.0, 0.0);
+      }
+    } else {
+      BinaryBasicBlock *TakenSuccBB = BB.getConditionalSuccessor(true);
+      if (TakenSuccBB) {
+        Edge CFGEdge = std::make_pair(BB.getLabel(), TakenSuccBB->getLabel());
+        CFGEdgeProbabilities[CFGEdge] = EdgeProbTaken;
+        BB.setSuccessorBranchInfo(*TakenSuccBB, 0.0, 0.0);
+      }
 
-  BinaryBasicBlock *TakenSucc = BB->getConditionalSuccessor(true);
-  BinaryBasicBlock *FallthroughSucc = BB->getConditionalSuccessor(false);
-
-  if (TakenSucc->size() == 0 || FallthroughSucc->size() == 0)
-    return NONE;
-
-  MCInst *LastSuccInst = TakenSucc->getLastNonPseudoInstr();
-
-  if (!LastSuccInst)
-    return NONE;
-
-  MCInst &FirstBBInst = BB->front();
-
-  // Checks if the successor contains a call instruction
-  // and does not post-dominate.
-  if (LastSuccInst && BPI->hasCallInst(TakenSucc) &&
-      !PDA.doesADominateB(*LastSuccInst, FirstBBInst)) {
-    Applies = true;
-    Prediction = std::make_pair(FallthroughSucc, TakenSucc);
-  }
-
-  LastSuccInst = FallthroughSucc->getLastNonPseudoInstr();
-  if (!LastSuccInst)
-    return NONE;
-
-  // Checks the opposite situation, to verify if the premisse holds.
-  if (BPI->hasCallInst(FallthroughSucc) &&
-      !PDA.doesADominateB(*LastSuccInst, FirstBBInst)) {
-
-    // If the heuristic applies to both branches, predict none.
-    if (Applies)
-      return NONE;
-
-    Applies = true;
-    Prediction = std::make_pair(TakenSucc, FallthroughSucc);
-  }
-
-  return (Applies ? Prediction : NONE);
-}
-
-PredictionInfo
-BranchHeuristicsInfo::opcodeHeuristic(BinaryBasicBlock *BB) const {
-  // TO-DO
-  return NONE;
-}
-
-PredictionInfo
-BranchHeuristicsInfo::loopExitHeuristic(BinaryBasicBlock *BB) const {
-
-  BinaryBasicBlock *TakenSucc = BB->getConditionalSuccessor(true);
-  BinaryBasicBlock *FallthroughSucc = BB->getConditionalSuccessor(false);
-
-  // Checks if neither of the branches are loop headers.
-  if (BPI->isLoopHeader(TakenSucc) || BPI->isLoopHeader(FallthroughSucc))
-    return NONE;
-
-  // If the analized edge is an exit edge the taken basic block must be the
-  // one that is not in this edge.
-  // Reminder: In this case it is impossible for both of the successor to be
-  // exit block.
-  if (BPI->isExitEdge(BB, TakenSucc))
-    return std::make_pair(FallthroughSucc, TakenSucc);
-  else if (BPI->isExitEdge(BB, FallthroughSucc))
-    return std::make_pair(TakenSucc, FallthroughSucc);
-
-  return NONE;
-}
-
-PredictionInfo
-BranchHeuristicsInfo::returnHeuristic(BinaryBasicBlock *BB) const {
-  BinaryFunction *Function = BB->getFunction();
-  BinaryContext &BC = Function->getBinaryContext();
-  bool Applies = false;
-  PredictionInfo Prediction;
-
-  BinaryBasicBlock *TakenSucc = BB->getConditionalSuccessor(true);
-  BinaryBasicBlock *FallthroughSucc = BB->getConditionalSuccessor(false);
-
-  if (TakenSucc->size() == 0 || FallthroughSucc->size() == 0)
-    return NONE;
-
-  MCInst *LastSuccInst = TakenSucc->getLastNonPseudoInstr();
-
-  if (!LastSuccInst)
-    return NONE;
-
-  // Checks if the taken basic block contains a return instruction.
-  if (BC.MIB->isReturn(*LastSuccInst)) {
-    Applies = true;
-    Prediction = std::make_pair(FallthroughSucc, TakenSucc);
-  }
-
-  LastSuccInst = FallthroughSucc->getLastNonPseudoInstr();
-  if (!LastSuccInst)
-    return NONE;
-
-  // Checks the opposite situation, to verify if the premisse holds.
-  if (BC.MIB->isReturn(*LastSuccInst)) {
-
-    // If the heuristic applies to both branches, predict none.
-    if (Applies)
-      return NONE;
-
-    Applies = true;
-    Prediction = std::make_pair(TakenSucc, FallthroughSucc);
-  }
-
-  return (Applies ? Prediction : NONE);
-}
-
-PredictionInfo
-BranchHeuristicsInfo::storeHeuristic(BinaryBasicBlock *BB,
-                                     DominatorAnalysis<true> &PDA) const {
-  bool Applies = false;
-  PredictionInfo Prediction;
-
-  BinaryBasicBlock *TakenSucc = BB->getConditionalSuccessor(true);
-  BinaryBasicBlock *FallthroughSucc = BB->getConditionalSuccessor(false);
-
-  if (TakenSucc->size() == 0 || FallthroughSucc->size() == 0)
-    return NONE;
-
-  MCInst *LastSuccInst = TakenSucc->getLastNonPseudoInstr();
-
-  if (!LastSuccInst)
-    return NONE;
-
-  MCInst &FirstBBInst = BB->front();
-
-  // Checks if the taken basic block contains a store instruction
-  // and does not post-dominate.
-  if (BPI->hasStoreInst(TakenSucc) &&
-      !PDA.doesADominateB(*LastSuccInst, FirstBBInst)) {
-    Applies = true;
-    Prediction = std::make_pair(FallthroughSucc, TakenSucc);
-  }
-
-  LastSuccInst = FallthroughSucc->getLastNonPseudoInstr();
-
-  if (!LastSuccInst)
-    return NONE;
-
-  // Checks the opposite situation, to verify if the premisse holds.
-  if (BPI->hasStoreInst(FallthroughSucc) &&
-      !PDA.doesADominateB(*LastSuccInst, FirstBBInst)) {
-
-    // If the heuristic applies to both branches, predict none.
-    if (Applies)
-      return NONE;
-
-    Applies = true;
-    Prediction = std::make_pair(TakenSucc, FallthroughSucc);
-  }
-
-  return (Applies ? Prediction : NONE);
-}
-
-PredictionInfo
-BranchHeuristicsInfo::loopHeaderHeuristic(BinaryBasicBlock *BB,
-                                          DominatorAnalysis<true> &PDA) const {
-  bool Applies = false;
-  PredictionInfo Prediction;
-
-  BinaryBasicBlock *TakenSucc = BB->getConditionalSuccessor(true);
-  BinaryBasicBlock *FallthroughSucc = BB->getConditionalSuccessor(false);
-
-  if (TakenSucc->succ_size() == 1 && TakenSucc->pred_size() == 1) {
-    if (BinaryBasicBlock *PreHeaderTrueSucc = TakenSucc->getFallthrough()) {
-      TakenSucc = PreHeaderTrueSucc;
+      BinaryBasicBlock *NotTakenSuccBB = BB.getConditionalSuccessor(false);
+      if (NotTakenSuccBB) {
+        Edge CFGEdge =
+            std::make_pair(BB.getLabel(), NotTakenSuccBB->getLabel());
+        CFGEdgeProbabilities[CFGEdge] = EdgeProbNotTaken;
+        BB.setSuccessorBranchInfo(*NotTakenSuccBB, 0.0, 0.0);
+      }
     }
   }
-
-  MCInst *LastSuccInst = TakenSucc->getLastNonPseudoInstr();
-
-  if (!LastSuccInst)
-    return NONE;
-
-  MCInst &FirstBBInst = BB->front();
-
-  // Checks if the taken basic block is a loop header and
-  // if does not post dominates
-  if (BPI->isLoopHeader(TakenSucc) &&
-      !PDA.doesADominateB(*LastSuccInst, FirstBBInst)) {
-    Applies = true;
-    Prediction = std::make_pair(TakenSucc, FallthroughSucc);
-  }
-
-  if (FallthroughSucc->succ_size() == 1 && FallthroughSucc->pred_size() == 1) {
-    if (BinaryBasicBlock *preHeaderFallthroughSucc =
-            FallthroughSucc->getFallthrough()) {
-      FallthroughSucc = preHeaderFallthroughSucc;
-    }
-  }
-
-  LastSuccInst = FallthroughSucc->getLastNonPseudoInstr();
-
-  // Checks if the not taken basic block is a loop header and
-  // if does not post dominates
-  if (BPI->isLoopHeader(FallthroughSucc) &&
-      !PDA.doesADominateB(*LastSuccInst, FirstBBInst)) {
-
-    // If the heuristic matches both branches, predict none.
-    if (Applies)
-      return NONE;
-
-    Applies = true;
-    Prediction = std::make_pair(FallthroughSucc, TakenSucc);
-  }
-
-  return (Applies ? Prediction : NONE);
 }
 
-PredictionInfo
-BranchHeuristicsInfo::guardHeuristic(BinaryBasicBlock *BB) const {
-  // TO-DO
-  return NONE;
+void StaticBranchProbabilities::computeHeuristicBasedProbabilities(
+    BinaryFunction &Function) {
+
+  Function.setExecutionCount(1);
+
+  BinaryContext &BC = Function.getBinaryContext();
+  auto Info = DataflowInfoManager(BC, Function, nullptr, nullptr);
+  auto &PDA = Info.getPostDominatorAnalysis();
+
+  for (auto &BB : Function) {
+    unsigned NumSucc = BB.succ_size();
+    if (NumSucc == 0)
+      continue;
+
+    unsigned NumBackedges = BSI->countBackEdges(&BB);
+
+    // If the basic block that conatins the branch has an exit call,
+    // then we assume that its successors will never be reached.
+    if (BSI->callToExit(&BB, BC)) {
+      for (BinaryBasicBlock *SuccBB : BB.successors()) {
+        double EdgeProb = 0.0;
+        Edge CFGEdge = std::make_pair(BB.getLabel(), SuccBB->getLabel());
+        CFGEdgeProbabilities[CFGEdge] = EdgeProb;
+        BB.setSuccessorBranchInfo(*SuccBB, 0.0, 0.0);
+      }
+
+    } else if (NumBackedges > 0 && NumBackedges < NumSucc) {
+      // Both back edges and exit edges
+      for (BinaryBasicBlock *SuccBB : BB.successors()) {
+        Edge CFGEdge = std::make_pair(BB.getLabel(), SuccBB->getLabel());
+
+        if (BSI->isBackEdge(CFGEdge)) {
+          double EdgeProb =
+              BHI->getTakenProbability(LOOP_BRANCH_HEURISTIC) / NumBackedges;
+          CFGEdgeProbabilities[CFGEdge] = EdgeProb;
+        } else {
+          double EdgeProb = BHI->getNotTakenProbability(LOOP_BRANCH_HEURISTIC) /
+                            (NumSucc - NumBackedges);
+          CFGEdgeProbabilities[CFGEdge] = EdgeProb;
+        }
+        BB.setSuccessorBranchInfo(*SuccBB, 0.0, 0.0);
+      }
+
+    } else if (NumBackedges > 0 || NumSucc != 2) {
+      // Only back edges, or not a 2-way branch.
+      for (BinaryBasicBlock *SuccBB : BB.successors()) {
+        Edge CFGEdge = std::make_pair(BB.getLabel(), SuccBB->getLabel());
+        CFGEdgeProbabilities[CFGEdge] = 1.0 / NumSucc;
+        BB.setSuccessorBranchInfo(*SuccBB, 0.0, 0.0);
+      }
+    } else {
+      assert(NumSucc == 2 && "Expected a two way conditional branch.");
+
+      BinaryBasicBlock *TakenBB = BB.getConditionalSuccessor(true);
+      BinaryBasicBlock *FallThroughBB = BB.getConditionalSuccessor(false);
+
+      if (!TakenBB || !FallThroughBB)
+        continue;
+
+      Edge TakenEdge = std::make_pair(BB.getLabel(), TakenBB->getLabel());
+      Edge FallThroughEdge =
+          std::make_pair(BB.getLabel(), FallThroughBB->getLabel());
+
+      // Consider that each edge is unbiased, thus each edge
+      // has a likelihood of 50% of being taken.
+      CFGEdgeProbabilities[TakenEdge] = 0.5f;
+      CFGEdgeProbabilities[FallThroughEdge] = 0.5f;
+
+      for (unsigned BHId = 0; BHId < BHI->getNumHeuristics(); ++BHId) {
+        BranchHeuristics Heuristic = BHI->getHeuristic(BHId);
+        PredictionInfo Prediction =
+            BHI->getApplicableHeuristic(Heuristic, &BB, PDA);
+        if (!Prediction.first)
+          continue;
+
+        /// If the heuristic applies then combines the probabilities and
+        /// updates the edge weights
+
+        BinaryBasicBlock *TakenBB = Prediction.first;
+        BinaryBasicBlock *FallThroughBB = Prediction.second;
+
+        Edge TakenEdge = std::make_pair(BB.getLabel(), TakenBB->getLabel());
+        Edge FallThroughEdge =
+            std::make_pair(BB.getLabel(), FallThroughBB->getLabel());
+
+        double ProbTaken = BHI->getTakenProbability(Heuristic);
+        double ProbNotTaken = BHI->getNotTakenProbability(Heuristic);
+
+        double OldProbTaken = getCFGEdgeProbability(BB, *TakenBB);
+        double OldProbNotTaken = getCFGEdgeProbability(BB, *FallThroughBB);
+
+        double Divisor =
+            OldProbTaken * ProbTaken + OldProbNotTaken * ProbNotTaken;
+
+        CFGEdgeProbabilities[TakenEdge] = OldProbTaken * ProbTaken / Divisor;
+        CFGEdgeProbabilities[FallThroughEdge] =
+            OldProbNotTaken * ProbNotTaken / Divisor;
+      }
+
+      BB.setSuccessorBranchInfo(*TakenBB, 0.0, 0.0);
+      BB.setSuccessorBranchInfo(*FallThroughBB, 0.0, 0.0);
+    }
+  }
 }
 
 } // namespace bolt
+
 } // namespace llvm
