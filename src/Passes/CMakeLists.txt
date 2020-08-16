@@ -11,6 +11,7 @@ add_llvm_library(LLVMBOLTPasses
   DataflowInfoManager.cpp
   ExtTSPReorderAlgorithm.cpp
   FeatureMiner.cpp
+  FunctionCallFrequency.cpp
   FrameAnalysis.cpp
   FrameOptimizer.cpp
   HFSort.cpp
