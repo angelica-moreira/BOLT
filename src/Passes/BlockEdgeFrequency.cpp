@@ -563,7 +563,9 @@ void BlockEdgeFrequency::runOnFunctions(BinaryContext &BC) {
       EntryBB.setExecutionCount(SCALING_FACTOR);
     }
 
-    if (opts::HeuristicBased != bolt::StaticBranchProbabilities::H_WU_LARUS)
+    if (opts::HeuristicBased == bolt::StaticBranchProbabilities::H_WU_LARUS)
+      SBP->computeHeuristicBasedProbabilities(Function);
+    else 
       SBP->computeProbabilities(Function);
 
     Function.setExecutionCount(SCALING_FACTOR);
