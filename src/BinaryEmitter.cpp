@@ -177,7 +177,7 @@ private:
                      bool FirstInstr);
 
   /// Emit debug line information for functions that were not emitted.
-  void emitDebugLineInfoForNonSimpleFunctions();
+  void emitDebugLineInfoForOriginalFunctions();
 
   /// Emit function as a blob with relocations and labels for relocations.
   void emitFunctionBodyRaw(BinaryFunction &BF) LLVM_ATTRIBUTE_UNUSED;
@@ -199,8 +199,8 @@ void BinaryEmitter::emitAll(StringRef OrgSecPrefix) {
 
   emitFunctions();
 
-  if (!BC.HasRelocations && opts::UpdateDebugSections)
-    emitDebugLineInfoForNonSimpleFunctions();
+  if (opts::UpdateDebugSections)
+    emitDebugLineInfoForOriginalFunctions();
 
   emitDataSections(OrgSecPrefix);
 
@@ -269,7 +269,7 @@ bool BinaryEmitter::emitFunction(BinaryFunction &Function, bool EmitColdPart) {
   if (Function.getState() == BinaryFunction::State::Empty)
     return false;
 
-  auto *Section =
+  MCSection *Section =
       BC.getCodeSection(EmitColdPart ? Function.getColdCodeSectionName()
                                      : Function.getCodeSectionName());
   Streamer.SwitchSection(Section);
@@ -290,16 +290,19 @@ bool BinaryEmitter::emitFunction(BinaryFunction &Function, bool EmitColdPart) {
   MCContext &Context = Streamer.getContext();
   const MCAsmInfo *MAI = Context.getAsmInfo();
 
+  MCSymbol *StartSymbol = nullptr;
+
   // Emit all symbols associated with the main function entry.
   if (!EmitColdPart) {
-    for (auto *Symbol : Function.getSymbols()) {
+    StartSymbol = Function.getSymbol();
+    for (MCSymbol *Symbol : Function.getSymbols()) {
       Streamer.EmitSymbolAttribute(Symbol, MCSA_ELF_TypeFunction);
       Streamer.EmitLabel(Symbol);
     }
   } else {
-    auto *Symbol = Function.getColdSymbol();
-    Streamer.EmitSymbolAttribute(Symbol, MCSA_ELF_TypeFunction);
-    Streamer.EmitLabel(Symbol);
+    StartSymbol = Function.getColdSymbol();
+    Streamer.EmitSymbolAttribute(StartSymbol, MCSA_ELF_TypeFunction);
+    Streamer.EmitLabel(StartSymbol);
   }
 
   // Emit CFI start
@@ -358,8 +361,16 @@ bool BinaryEmitter::emitFunction(BinaryFunction &Function, bool EmitColdPart) {
   if (Function.hasCFI())
     Streamer.EmitCFIEndProc();
 
-  Streamer.EmitLabel(EmitColdPart ? Function.getFunctionColdEndLabel()
-                                  : Function.getFunctionEndLabel());
+  MCSymbol *EndSymbol = EmitColdPart ? Function.getFunctionColdEndLabel()
+                                     : Function.getFunctionEndLabel();
+  Streamer.EmitLabel(EndSymbol);
+
+  if (MAI->hasDotTypeDotSizeDirective()) {
+    const MCExpr *SizeExpr = MCBinaryExpr::createSub(
+        MCSymbolRefExpr::create(EndSymbol, Context),
+        MCSymbolRefExpr::create(StartSymbol, Context), Context);
+    Streamer.emitELFSize(StartSymbol, SizeExpr);
+  }
 
   // Exception handling info for the function.
   emitLSDA(Function, EmitColdPart);
@@ -387,8 +398,10 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, bool EmitColdPart,
                                  BB->getAlignmentMaxBytes());
     }
     Streamer.EmitLabel(BB->getLabel());
-    if (auto *EntrySymbol = BF.getSecondaryEntryPointSymbol(*BB)) {
-      Streamer.EmitLabel(EntrySymbol);
+    if (!EmitCodeOnly) {
+      if (auto *EntrySymbol = BF.getSecondaryEntryPointSymbol(*BB)) {
+        Streamer.EmitLabel(EntrySymbol);
+      }
     }
 
     // Check if special alignment for macro-fusion is needed.
@@ -435,8 +448,7 @@ void BinaryEmitter::emitFunctionBody(BinaryFunction &BF, bool EmitColdPart,
         Streamer.EmitNeverAlignCodeAtEnd(/*Alignment to avoid=*/64);
       }
 
-      if (!EmitCodeOnly && opts::UpdateDebugSections &&
-          BF.getDWARFUnitLineTable().first) {
+      if (!EmitCodeOnly && opts::UpdateDebugSections && BF.getDWARFUnit()) {
         LastLocSeen = emitLineInfo(BF, Instr.getLoc(), LastLocSeen, FirstInstr);
         FirstInstr = false;
       }
@@ -479,12 +491,12 @@ void BinaryEmitter::emitConstantIslands(BinaryFunction &BF, bool EmitColdPart,
   assert(!BF.isInjected() &&
          "injected functions should not have constant islands");
   // Raw contents of the function.
-  StringRef SectionContents = BF.getSection().getContents();
+  StringRef SectionContents = BF.getOriginSection()->getContents();
 
   // Raw contents of the function.
   StringRef FunctionContents =
       SectionContents.substr(
-          BF.getAddress() - BF.getSection().getAddress(),
+          BF.getAddress() - BF.getOriginSection()->getAddress(),
           BF.getMaxSize());
 
   if (opts::Verbosity && !OnBehalfOf)
@@ -593,11 +605,11 @@ void BinaryEmitter::emitConstantIslands(BinaryFunction &BF, bool EmitColdPart,
 
 SMLoc BinaryEmitter::emitLineInfo(const BinaryFunction &BF, SMLoc NewLoc,
                                   SMLoc PrevLoc, bool FirstInstr) {
-  auto *FunctionCU = BF.getDWARFUnitLineTable().first;
-  const auto *FunctionLineTable = BF.getDWARFUnitLineTable().second;
+  DWARFUnit *FunctionCU = BF.getDWARFUnit();
+  const DWARFDebugLine::LineTable *FunctionLineTable = BF.getDWARFLineTable();
   assert(FunctionCU && "cannot emit line info for function without CU");
 
-  auto RowReference = DebugLineTableRowRef::fromSMLoc(NewLoc);
+  DebugLineTableRowRef RowReference = DebugLineTableRowRef::fromSMLoc(NewLoc);
 
   // Check if no new line info needs to be emitted.
   if (RowReference == DebugLineTableRowRef::NULL_ROW ||
@@ -605,7 +617,7 @@ SMLoc BinaryEmitter::emitLineInfo(const BinaryFunction &BF, SMLoc NewLoc,
     return PrevLoc;
 
   unsigned CurrentFilenum = 0;
-  const auto *CurrentLineTable = FunctionLineTable;
+  const DWARFDebugLine::LineTable *CurrentLineTable = FunctionLineTable;
 
   // If the CU id from the current instruction location does not
   // match the CU id from the current function, it means that we
@@ -782,28 +794,49 @@ void BinaryEmitter::emitLSDA(BinaryFunction &BF, bool EmitColdPart) {
   Streamer.EmitLabel(LSDASymbol);
 
   // Corresponding FDE start.
-  const auto *StartSymbol = EmitColdPart ? BF.getColdSymbol() : BF.getSymbol();
+  const MCSymbol *StartSymbol = EmitColdPart ? BF.getColdSymbol()
+                                             : BF.getSymbol();
 
   // Emit the LSDA header.
 
   // If LPStart is omitted, then the start of the FDE is used as a base for
   // landing pad displacements. Then if a cold fragment starts with
   // a landing pad, this means that the first landing pad offset will be 0.
-  // As a result, an exception handling runtime will ignore this landing pad,
+  // As a result, the exception handling runtime will ignore this landing pad
   // because zero offset denotes the absence of a landing pad.
-  // For this reason, we emit LPStart value of 0 and output an absolute value
-  // of the landing pad in the table.
+  // For this reason, when the binary has fixed starting address we emit LPStart
+  // as 0 and output the absolute value of the landing pad in the table.
   //
-  // FIXME: this may break PIEs and DSOs where the base address is not 0.
-  Streamer.EmitIntValue(dwarf::DW_EH_PE_udata4, 1); // LPStart format
-  Streamer.EmitIntValue(0, 4);
-  auto emitLandingPad = [&](const MCSymbol *LPSymbol) {
-    if (!LPSymbol) {
-      Streamer.EmitIntValue(0, 4);
-      return;
-    }
-    Streamer.EmitSymbolValue(LPSymbol, 4);
-  };
+  // If the base address can change, we cannot use absolute addresses for
+  // landing pads (at least not without runtime relocations). Hence, we fall
+  // back to emitting landing pads relative to the FDE start.
+  // As we are emitting label differences, we have to guarantee both labels are
+  // defined in the same section and hence cannot place the landing pad into a
+  // cold fragment when the corresponding call site is in the hot fragment.
+  // Because of this issue and the previously described issue of possible
+  // zero-offset landing pad we disable splitting of exception-handling
+  // code for shared objects.
+  std::function<void(const MCSymbol *)> emitLandingPad;
+  if (BC.HasFixedLoadAddress) {
+    Streamer.EmitIntValue(dwarf::DW_EH_PE_udata4, 1); // LPStart format
+    Streamer.EmitIntValue(0, 4);                      // LPStart
+    emitLandingPad = [&](const MCSymbol *LPSymbol) {
+      if (!LPSymbol)
+        Streamer.EmitIntValue(0, 4);
+      else
+        Streamer.EmitSymbolValue(LPSymbol, 4);
+    };
+  } else {
+    assert(!EmitColdPart &&
+           "cannot have exceptions in cold fragment for shared object");
+    Streamer.EmitIntValue(dwarf::DW_EH_PE_omit, 1); // LPStart format
+    emitLandingPad = [&](const MCSymbol *LPSymbol) {
+      if (!LPSymbol)
+        Streamer.EmitIntValue(0, 4);
+      else
+        Streamer.emitAbsoluteSymbolDiff(LPSymbol, StartSymbol, 4);
+    };
+  }
 
   Streamer.EmitIntValue(TTypeEncoding, 1);        // TType format
 
@@ -863,25 +896,26 @@ void BinaryEmitter::emitLSDA(BinaryFunction &BF, bool EmitColdPart) {
   for (auto const &Byte : BF.getLSDAActionTable()) {
     Streamer.EmitIntValue(Byte, 1);
   }
-  assert(!(TTypeEncoding & dwarf::DW_EH_PE_indirect) &&
-         "indirect type info encoding is not supported yet");
-  for (int Index = BF.getLSDATypeTable().size() - 1; Index >= 0; --Index) {
-    // Note: the address could be an indirect one.
-    const auto TypeAddress = BF.getLSDATypeTable()[Index];
+
+  const auto &TypeTable = (TTypeEncoding & dwarf::DW_EH_PE_indirect)
+      ? BF.getLSDATypeAddressTable()
+      : BF.getLSDATypeTable();
+  assert(TypeTable.size() == BF.getLSDATypeTable().size() &&
+         "indirect type table size mismatch");
+
+  for (int Index = TypeTable.size() - 1; Index >= 0; --Index) {
+    const uint64_t TypeAddress = TypeTable[Index];
     switch (TTypeEncoding & 0x70) {
     default:
       llvm_unreachable("unsupported TTypeEncoding");
-    case 0:
+    case dwarf::DW_EH_PE_absptr:
       Streamer.EmitIntValue(TypeAddress, TTypeEncodingSize);
       break;
     case dwarf::DW_EH_PE_pcrel: {
       if (TypeAddress) {
-        const auto *TypeSymbol =
-          BC.getOrCreateGlobalSymbol(TypeAddress,
-                                     "TI",
-                                     TTypeEncodingSize,
-                                     TTypeAlignment);
-        auto *DotSymbol = BC.Ctx->createTempSymbol();
+        const MCSymbol *TypeSymbol =
+          BC.getOrCreateGlobalSymbol(TypeAddress, "TI", 0, TTypeAlignment);
+        MCSymbol *DotSymbol = BC.Ctx->createTempSymbol();
         Streamer.EmitLabel(DotSymbol);
         const auto *SubDotExpr = MCBinaryExpr::createSub(
             MCSymbolRefExpr::create(TypeSymbol, *BC.Ctx),
@@ -900,16 +934,16 @@ void BinaryEmitter::emitLSDA(BinaryFunction &BF, bool EmitColdPart) {
   }
 }
 
-void BinaryEmitter::emitDebugLineInfoForNonSimpleFunctions() {
+void BinaryEmitter::emitDebugLineInfoForOriginalFunctions() {
   for (auto &It : BC.getBinaryFunctions()) {
     const auto &Function = It.second;
 
-    if (Function.isSimple())
+    // If the function was emitted, its line info was emitted with it.
+    if (Function.isEmitted())
       continue;
 
-    auto ULT = Function.getDWARFUnitLineTable();
-    auto Unit = ULT.first;
-    auto LineTable = ULT.second;
+    DWARFUnit *Unit = Function.getDWARFUnit();
+    const DWARFDebugLine::LineTable *LineTable = Function.getDWARFLineTable();
 
     if (!LineTable)
       continue; // nothing to update for this function
@@ -964,11 +998,11 @@ void BinaryEmitter::emitFunctionBodyRaw(BinaryFunction &BF) {
   assert(!BF.isInjected() && "cannot emit raw body of injected function");
 
   // Raw contents of the function.
-  StringRef SectionContents = BF.getSection().getContents();
+  StringRef SectionContents = BF.getOriginSection()->getContents();
 
   // Raw contents of the function.
   StringRef FunctionContents = SectionContents.substr(
-      BF.getAddress() - BF.getSection().getAddress(), BF.getSize());
+      BF.getAddress() - BF.getOriginSection()->getAddress(), BF.getSize());
 
   if (opts::Verbosity)
     outs() << "BOLT-INFO: emitting function " << BF << " in raw ("

@@ -58,8 +58,6 @@
 
 namespace llvm {
 
-class DWARFDebugInfoEntryMinimal;
-
 using namespace object;
 
 namespace bolt {
@@ -208,7 +206,8 @@ class BinaryContext {
 
 public:
   static std::unique_ptr<BinaryContext>
-  createBinaryContext(ObjectFile *File, std::unique_ptr<DWARFContext> DwCtx);
+  createBinaryContext(ObjectFile *File, bool IsPIC,
+                      std::unique_ptr<DWARFContext> DwCtx);
 
   /// [start memory address] -> [segment info] mapping.
   std::map<uint64_t, SegmentInfo> SegmentMapInfo;
@@ -276,7 +275,7 @@ public:
   }
 
   /// Return BinaryFunction containing a given \p Address or nullptr if
-  /// no registered function has it.
+  /// no registered function contains the \p Address.
   ///
   /// In a binary a function has somewhat vague  boundaries. E.g. a function can
   /// refer to the first byte past the end of the function, and it will still be
@@ -294,19 +293,14 @@ public:
   /// body and the next object in address ranges that we check.
   BinaryFunction *getBinaryFunctionContainingAddress(uint64_t Address,
                                                      bool CheckPastEnd = false,
-                                                     bool UseMaxSize = false,
-                                                     bool Shallow = false);
+                                                     bool UseMaxSize = false);
 
-  /// Return BinaryFunction which has a fragment that starts at a given
-  /// \p Address. If the BinaryFunction is a child fragment, then return its
-  /// parent unless \p Shallow parameter is set to true.
-  BinaryFunction *getBinaryFunctionAtAddress(uint64_t Address,
-                                             bool Shallow = false);
+  /// Return a BinaryFunction that starts at a given \p Address.
+  BinaryFunction *getBinaryFunctionAtAddress(uint64_t Address);
 
-  const BinaryFunction *getBinaryFunctionAtAddress(uint64_t Address,
-                                                   bool Shallow = false) const {
+  const BinaryFunction *getBinaryFunctionAtAddress(uint64_t Address) const {
     return const_cast<BinaryContext *>(this)->
-        getBinaryFunctionAtAddress(Address, Shallow);
+        getBinaryFunctionAtAddress(Address);
   }
 
   /// Return size of an entry for the given jump table \p Type.
@@ -414,6 +408,10 @@ public:
     return InjectedBinaryFunctions;
   }
 
+  /// Return vector with all functions, i.e. include functions from the input
+  /// binary and functions created by BOLT.
+  std::vector<BinaryFunction *> getAllBinaryFunctions();
+
   /// Construct a jump table for \p Function at \p Address or return an existing
   /// one at that location.
   ///
@@ -435,7 +433,7 @@ public:
   /// could be partially populated if the jump table detection fails.
   bool analyzeJumpTable(const uint64_t Address,
                         const JumpTable::JumpTableType Type,
-                        const BinaryFunction &BF,
+                        BinaryFunction &BF,
                         const uint64_t NextJTAddress = 0,
                         JumpTable::OffsetsType *Offsets = nullptr);
 
@@ -516,7 +514,9 @@ public:
   /// Indicates if relocations are available for usage.
   bool HasRelocations{false};
 
-  /// Is the binary always loaded at a fixed address.
+  /// Is the binary always loaded at a fixed address. Shared objects and
+  /// position-independent executables (PIEs) are examples of binaries that
+  /// will have HasFixedLoadAddress set to false.
   bool HasFixedLoadAddress{true};
 
   /// True if the binary has no dynamic dependencies, i.e., if it was statically
@@ -605,6 +605,10 @@ public:
 
   bool isELF() const {
     return TheTriple->isOSBinFormatELF();
+  }
+
+  bool isMachO() const {
+    return TheTriple->isOSBinFormatMachO();
   }
 
   bool isAArch64() const {
@@ -809,6 +813,10 @@ public:
   }
 
   /// @}
+
+  /// Register \p TargetFunction as fragment of \p Function.
+  void registerFragment(BinaryFunction &TargetFunction,
+                        BinaryFunction &Function) const;
 
   /// Resolve inter-procedural dependencies from \p Function.
   void processInterproceduralReferences(BinaryFunction &Function);
@@ -1182,7 +1190,8 @@ public:
     MCEInstance.LocalMOFI = llvm::make_unique<MCObjectFileInfo>();
     MCEInstance.LocalCtx = llvm::make_unique<MCContext>(
         AsmInfo.get(), MRI.get(), MCEInstance.LocalMOFI.get());
-    MCEInstance.LocalMOFI->InitMCObjectFileInfo(*TheTriple, /*PIC=*/false,
+    MCEInstance.LocalMOFI->InitMCObjectFileInfo(*TheTriple,
+                                                /*PIC=*/!HasFixedLoadAddress,
                                                 *MCEInstance.LocalCtx);
     MCEInstance.MCE.reset(
         TheTarget->createMCCodeEmitter(*MII, *MRI, *MCEInstance.LocalCtx));

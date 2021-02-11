@@ -2152,7 +2152,7 @@ public:
       Inst.insert(Inst.begin(), MCOperand::createReg(Reg));
       return;
     }
-    Inst.dump();
+    DEBUG(Inst.dump());
     llvm_unreachable("not implemented");
   }
 
@@ -3325,6 +3325,38 @@ public:
     return Insts;
   }
 
+  std::vector<MCInst> createNumCountersGetter(MCContext *Ctx) const override {
+    std::vector<MCInst> Insts(2);
+    MCSymbol *NumLocs = Ctx->getOrCreateSymbol("__bolt_num_counters");
+    createMove(Insts[0], NumLocs, X86::EAX, Ctx);
+    createReturn(Insts[1]);
+    return Insts;
+  }
+
+  std::vector<MCInst> createInstrLocationsGetter(MCContext *Ctx) const override {
+    std::vector<MCInst> Insts(2);
+    MCSymbol *Locs = Ctx->getOrCreateSymbol("__bolt_instr_locations");
+    createLea(Insts[0], Locs, X86::EAX, Ctx);
+    createReturn(Insts[1]);
+    return Insts;
+  }
+
+  std::vector<MCInst> createInstrTablesGetter(MCContext *Ctx) const override {
+    std::vector<MCInst> Insts(2);
+    MCSymbol *Locs = Ctx->getOrCreateSymbol("__bolt_instr_tables");
+    createLea(Insts[0], Locs, X86::EAX, Ctx);
+    createReturn(Insts[1]);
+    return Insts;
+  }
+
+  std::vector<MCInst> createInstrNumFuncsGetter(MCContext *Ctx) const override {
+    std::vector<MCInst> Insts(2);
+    MCSymbol *NumFuncs = Ctx->getOrCreateSymbol("__bolt_instr_num_funcs");
+    createMove(Insts[0], NumFuncs, X86::EAX, Ctx);
+    createReturn(Insts[1]);
+    return Insts;
+  }
+
   BlocksVectorTy indirectCallPromotion(
     const MCInst &CallInst,
     const std::vector<std::pair<MCSymbol *, uint64_t>> &Targets,
@@ -3627,6 +3659,36 @@ public:
     return Results;
   }
 
+private:
+
+  bool createMove(MCInst &Inst, const MCSymbol *Src, unsigned Reg,
+                  MCContext *Ctx) const {
+    Inst.setOpcode(X86::MOV64rm);
+    Inst.addOperand(MCOperand::createReg(Reg));
+    Inst.addOperand(MCOperand::createReg(X86::RIP));        // BaseReg
+    Inst.addOperand(MCOperand::createImm(1));               // ScaleAmt
+    Inst.addOperand(MCOperand::createReg(X86::NoRegister)); // IndexReg
+    Inst.addOperand(MCOperand::createExpr(
+        MCSymbolRefExpr::create(Src, MCSymbolRefExpr::VK_None,
+                                *Ctx)));                    // Displacement
+    Inst.addOperand(MCOperand::createReg(X86::NoRegister)); // AddrSegmentReg
+
+    return true;
+  }
+
+  bool createLea(MCInst &Inst, const MCSymbol *Src, unsigned Reg,
+                 MCContext *Ctx) const {
+    Inst.setOpcode(X86::LEA64r);
+    Inst.addOperand(MCOperand::createReg(Reg));
+    Inst.addOperand(MCOperand::createReg(X86::RIP));        // BaseReg
+    Inst.addOperand(MCOperand::createImm(1));               // ScaleAmt
+    Inst.addOperand(MCOperand::createReg(X86::NoRegister)); // IndexReg
+    Inst.addOperand(MCOperand::createExpr(
+        MCSymbolRefExpr::create(Src, MCSymbolRefExpr::VK_None,
+                                *Ctx)));                    // Displacement
+    Inst.addOperand(MCOperand::createReg(X86::NoRegister)); // AddrSegmentReg
+    return true;
+  }
 };
 
 }

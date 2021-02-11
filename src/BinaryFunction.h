@@ -22,6 +22,7 @@
 #include "DebugData.h"
 #include "JumpTable.h"
 #include "MCPlus.h"
+#include "NameResolver.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/ilist.h"
 #include "llvm/ADT/iterator.h"
@@ -51,9 +52,6 @@ class DWARFUnit;
 class DWARFDebugInfoEntryMinimal;
 
 namespace bolt {
-
-using DWARFUnitLineTable = std::pair<DWARFUnit *,
-                                     const DWARFDebugLine::LineTable *>;
 
 /// Types of macro-fusion alignment corrections.
 enum MacroFusionType {
@@ -112,7 +110,10 @@ inline raw_ostream &operator<<(raw_ostream &OS,
 
 /// BinaryFunction is a representation of machine-level function.
 ///
-/// We use the term "Binary" as "Machine" was already taken.
+/// In the input binary, an instance of BinaryFunction can represent a fragment
+/// of a function if the higher-level function was split, e.g. into hot and cold
+/// parts. The fragment containing the main entry point is called a parent
+/// or the main fragment.
 class BinaryFunction {
 public:
   enum class State : char {
@@ -197,8 +198,8 @@ private:
   /// the function to its name in a profile, command line, etc.
   std::vector<std::string> Aliases;
 
-  /// Containing section
-  BinarySection *InputSection = nullptr;
+  /// Containing section in the input file.
+  BinarySection *OriginSection = nullptr;
 
   /// Address of the function in memory. Also could be an offset from
   /// base address for position independent binaries.
@@ -315,7 +316,20 @@ private:
   /// True if the original entry point was patched.
   bool IsPatched{false};
 
+  /// True if the function contains jump table with entries pointing to
+  /// locations in fragments.
+  bool HasSplitJumpTable{false};
+
+  /// True if there are no control-flow edges with successors in other functions
+  /// (i.e. if tail calls have edges to function-local basic blocks).
+  /// Set to false by SCTC. Dynostats can't be reliably computed for
+  /// functions with non-canonical CFG.
+  /// This attribute is only valid when hasCFG() == true.
+  bool HasCanonicalCFG{true};
+
   /// The address for the code for this function in codegen memory.
+  /// Used for functions that are emitted in a dedicated section with a fixed
+  /// address. E.g. for functions that are overwritten in-place.
   uint64_t ImageAddress{0};
 
   /// The size of the code in memory.
@@ -327,8 +341,8 @@ private:
   /// Name for the corresponding cold code section.
   std::string ColdCodeSectionName;
 
-  /// Parent function for split function fragments.
-  BinaryFunction *ParentFunction{nullptr};
+  /// Parent function fragment for split function fragments.
+  BinaryFunction *ParentFragment{nullptr};
 
   /// Indicate if the function body was folded into another function.
   /// Used by ICF optimization.
@@ -361,15 +375,8 @@ private:
   /// Original LSDA address for the function.
   uint64_t LSDAAddress{0};
 
-  /// Associated DIEs in the .debug_info section with their respective CUs.
-  /// There can be multiple because of identical code folding.
-  std::vector<DWARFDie> SubprogramDIEs;
-
-  /// Line table for the function with containing compilation unit.
-  /// Because of identical code folding the function could have multiple
-  /// associated compilation units. The first of them with line number info
-  /// is referenced by UnitLineTable.
-  DWARFUnitLineTable UnitLineTable{nullptr, nullptr};
+  /// Containing compilation unit for the function.
+  DWARFUnit *DwarfUnit{nullptr};
 
   /// Last computed hash value. Note that the value could be recomputed using
   /// different parameters by every pass.
@@ -488,11 +495,19 @@ private:
   std::vector<CallSite> CallSites;
   std::vector<CallSite> ColdCallSites;
 
-  /// Binary blobs reprsenting action, type, and type index tables for this
+  /// Binary blobs representing action, type, and type index tables for this
   /// function' LSDA (exception handling).
   ArrayRef<uint8_t> LSDAActionTable;
-  std::vector<uint64_t> LSDATypeTable;
   ArrayRef<uint8_t> LSDATypeIndexTable;
+
+  using LSDATypeTableTy = std::vector<uint64_t>;
+
+  /// Vector of addresses of types referenced by LSDA.
+  LSDATypeTableTy LSDATypeTable;
+
+  /// Vector of addresses of entries in LSDATypeTable used for indirect
+  /// addressing.
+  LSDATypeTableTy LSDATypeAddressTable;
 
   /// Marking for the beginning of language-specific data area for the function.
   MCSymbol *LSDASymbol{nullptr};
@@ -617,14 +632,18 @@ private:
   /// instead of calling this function directly.
   uint64_t getEntryIDForSymbol(const MCSymbol *EntrySymbol) const;
 
-  void setParentFunction(BinaryFunction *BF) {
-    assert((!ParentFunction || ParentFunction == BF) &&
+  /// If the function represents a secondary split function fragment, set its
+  /// parent fragment to \p BF.
+  void setParentFragment(BinaryFunction &BF) {
+    assert(IsFragment && "function must be a fragment to have a parent");
+    assert((!ParentFragment || ParentFragment == &BF) &&
            "cannot have more than one parent function");
-    ParentFunction = BF;
+    ParentFragment = &BF;
   }
 
-  void addFragment(BinaryFunction *BF) {
-    Fragments.insert(BF);
+  /// Register a child fragment for the main fragment of a split function.
+  void addFragment(BinaryFunction &BF) {
+    Fragments.insert(&BF);
   }
 
   void addInstruction(uint64_t Offset, MCInst &&Instruction) {
@@ -661,7 +680,7 @@ private:
   /// Creation should be handled by RewriteInstance or BinaryContext
   BinaryFunction(const std::string &Name, BinarySection &Section,
                  uint64_t Address, uint64_t Size, BinaryContext &BC)
-      : InputSection(&Section), Address(Address), Size(Size), BC(BC),
+      : OriginSection(&Section), Address(Address), Size(Size), BC(BC),
         CodeSectionName(buildCodeSectionName(Name, BC)),
         ColdCodeSectionName(buildColdCodeSectionName(Name, BC)),
         FunctionNumber(++Count) {
@@ -695,6 +714,7 @@ private:
     clearList(CallSites);
     clearList(ColdCallSites);
     clearList(LSDATypeTable);
+    clearList(LSDATypeAddressTable);
 
     clearList(MoveRelocations);
 
@@ -1031,8 +1051,12 @@ public:
     return Res.hasValue();
   }
 
-  /// Check if of function names matches the given regex.
+  /// Check if any of function names matches the given regex.
   Optional<StringRef> hasNameRegex(const StringRef NameRegex) const;
+
+  /// Check if any of restored function names matches the given regex.
+  /// Restored name means stripping BOLT-added suffixes like "/1",
+  Optional<StringRef> hasRestoredNameRegex(const StringRef NameRegex) const;
 
   /// Return a vector of all possible names for the function.
   const std::vector<StringRef> getNames() const {
@@ -1069,11 +1093,17 @@ public:
            getState() == State::Emitted;
   }
 
-  BinarySection &getSection() const {
-    assert(InputSection);
-    return *InputSection;
+  /// Return the section in the input binary this function originated from or
+  /// nullptr if the function did not originate from the file.
+  BinarySection *getOriginSection() const {
+    return OriginSection;
   }
 
+  void setOriginSection(BinarySection *Section) {
+    OriginSection = Section;
+  }
+
+  /// Return true if the function did not originate from the primary input file.
   bool isInjected() const {
     return IsInjected;
   }
@@ -1202,7 +1232,7 @@ public:
       return ColdSymbol;
 
     ColdSymbol = BC.Ctx->getOrCreateSymbol(
-        Twine(getSymbol()->getName()).concat(".cold"));
+        NameResolver::append(getSymbol()->getName(), ".cold.0"));
 
     return ColdSymbol;
   }
@@ -1331,9 +1361,11 @@ public:
     //      Relocation{Offset, Symbol, RelType, Addend, Value};
   }
 
-  /// Return then name of the section this function originated from.
-  StringRef getOriginSectionName() const {
-    return getSection().getName();
+  /// Return the name of the section this function originated from.
+  Optional<StringRef> getOriginSectionName() const {
+    if (!OriginSection)
+      return NoneType();
+    return OriginSection->getName();
   }
 
   /// Return internal section name for this function.
@@ -1391,6 +1423,17 @@ public:
     return IsPseudo;
   }
 
+  /// Return true if the function contains a jump table with entries pointing
+  /// to split fragments.
+  bool hasSplitJumpTable() const {
+    return HasSplitJumpTable;
+  }
+
+  /// Return true if all CFG edges have local successors.
+  bool hasCanonicalCFG() const {
+    return HasCanonicalCFG;
+  }
+
   /// Return true if the original function code has all necessary relocations
   /// to track addresses of functions emitted to new locations.
   bool hasExternalRefRelocations() const {
@@ -1412,11 +1455,6 @@ public:
   /// Return true if the function has exception handling tables.
   bool hasEHRanges() const {
     return HasEHRanges;
-  }
-
-  /// Return true if the function has associated debug info.
-  bool hasDebugInfo() const {
-    return !SubprogramDIEs.empty();
   }
 
   /// Return true if the function uses DW_CFA_GNU_args_size CFIs.
@@ -1496,8 +1534,12 @@ public:
     return LSDAActionTable;
   }
 
-  const std::vector<uint64_t> &getLSDATypeTable() const {
+  const LSDATypeTableTy &getLSDATypeTable() const {
     return LSDATypeTable;
+  }
+
+  const LSDATypeTableTy &getLSDATypeAddressTable() const {
+    return LSDATypeAddressTable;
   }
 
   const ArrayRef<uint8_t> getLSDATypeIndexTable() const {
@@ -1872,6 +1914,14 @@ public:
     IsPatched = V;
   }
 
+  void setHasSplitJumpTable(bool V) {
+    HasSplitJumpTable = V;
+  }
+
+  void setHasCanonicalCFG(bool V) {
+    HasCanonicalCFG = V;
+  }
+
   void setFolded(BinaryFunction *BF) {
     FoldedIntoFunction = BF;
   }
@@ -1934,8 +1984,25 @@ public:
     return ImageSize;
   }
 
-  BinaryFunction *getParentFunction() const {
-    return ParentFunction;
+  /// Return true if the function is a secondary fragment of another function.
+  bool isFragment() const {
+    return IsFragment;
+  }
+
+  /// Return parent function fragment if this function is a secondary (child)
+  /// fragment of another function.
+  BinaryFunction *getParentFragment() const {
+    return ParentFragment;
+  }
+
+  /// If the function is a nested child fragment of another function, return its
+  /// topmost parent fragment.
+  const BinaryFunction *getTopmostFragment() const {
+    const BinaryFunction *BF = this;
+    while (BF->getParentFragment())
+      BF = BF->getParentFragment();
+
+    return BF;
   }
 
   /// Set the profile data for the number of times the function was called.
@@ -2353,35 +2420,19 @@ public:
                      OperandHashFuncTy OperandHashFunc =
                        [](const MCOperand&) { return std::string(); }) const;
 
-  /// Sets the associated .debug_info entry.
-  void addSubprogramDIE(const DWARFDie DIE) {
-    static std::mutex CriticalSectionMutex;
-    std::lock_guard<std::mutex> Lock(CriticalSectionMutex);
-    SubprogramDIEs.emplace_back(DIE);
+  void setDWARFUnit(DWARFUnit *Unit) {
+    DwarfUnit = Unit;
   }
 
-  void setDWARFUnitLineTable(DWARFUnit *Unit,
-                             const DWARFDebugLine::LineTable *Table) {
-    UnitLineTable = std::make_pair(Unit, Table);
+  /// Return DWARF compile unit for this function.
+  DWARFUnit *getDWARFUnit() const {
+    return DwarfUnit;
   }
 
-  /// Return all compilation units with entry for this function.
-  /// Because of identical code folding there could be multiple of these.
-  decltype(SubprogramDIEs) &getSubprogramDIEs() {
-    return SubprogramDIEs;
-  }
-
-  const decltype(SubprogramDIEs) &getSubprogramDIEs() const {
-    return SubprogramDIEs;
-  }
-
-  /// Return DWARF compile unit with line info for this function.
-  DWARFUnitLineTable &getDWARFUnitLineTable() {
-    return UnitLineTable;
-  }
-
-  const DWARFUnitLineTable &getDWARFUnitLineTable() const {
-    return UnitLineTable;
+  /// Return line info table for this function.
+  const DWARFDebugLine::LineTable *getDWARFLineTable() const {
+    return getDWARFUnit() ? BC.DwCtx->getLineTableForUnit(getDWARFUnit())
+                          : nullptr;
   }
 
   /// Finalize profile for the function.
@@ -2483,6 +2534,12 @@ public:
   FragmentInfo &cold() { return ColdFragment; }
 
   const FragmentInfo &cold() const { return ColdFragment; }
+
+  /// Mark child fragments as ignored.
+  void ignoreFragments() {
+    for (auto *Fragment : Fragments)
+      Fragment->setIgnored();
+  }
 };
 
 inline raw_ostream &operator<<(raw_ostream &OS,

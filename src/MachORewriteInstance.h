@@ -15,6 +15,7 @@
 #define LLVM_TOOLS_LLVM_BOLT_MACHO_REWRITE_INSTANCE_H
 
 #include "NameResolver.h"
+#include "ProfileReaderBase.h"
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
 #include "llvm/Object/MachO.h"
 #include <memory>
@@ -37,6 +38,7 @@ class BinaryContext;
 
 class MachORewriteInstance {
   object::MachOObjectFile *InputFile;
+  StringRef ToolPath;
   std::unique_ptr<BinaryContext> BC;
 
   NameResolver NR;
@@ -47,22 +49,33 @@ class MachORewriteInstance {
 
   std::unique_ptr<ToolOutputFile> Out;
 
+  std::unique_ptr<ProfileReaderBase> ProfileReader;
+  void preprocessProfileData();
+  void processProfileDataPreCFG();
+  void processProfileData();
+
   static StringRef getOrgSecPrefix() { return ".bolt.org"; }
 
+  void mapInstrumentationSection(orc::VModuleKey Key, StringRef SectionName);
   void mapCodeSections(orc::VModuleKey Key);
 
   void adjustCommandLineOptions();
   void readSpecialSections();
   void discoverFileObjects();
   void disassembleFunctions();
+  void buildFunctionsCFG();
   void postProcessFunctions();
   void runOptimizationPasses();
   void emitAndLink();
+
+  void writeInstrumentationSection(StringRef SectionName, raw_pwrite_stream &OS);
   void rewriteFile();
 
 public:
-  explicit MachORewriteInstance(object::MachOObjectFile *InputFile);
+  MachORewriteInstance(object::MachOObjectFile *InputFile, StringRef ToolPath);
   ~MachORewriteInstance();
+
+  Error setProfile(StringRef FileName);
 
   /// Run all the necessary steps to read, optimize and rewrite the binary.
   void run();
