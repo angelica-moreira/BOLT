@@ -111,7 +111,7 @@ private:
 
     Optional<unsigned> NumBasicBlocks;
 
-    Optional<unsigned> DeltaTaken;
+    int64_t DeltaTaken = -1;
 
     Optional<int32_t> OperandRAType;
     Optional<int32_t> OperandRBType;
@@ -135,7 +135,9 @@ private:
 
   /// extractFeatures - Extracts the feature information for each two-way branch
   /// from the program.
-  void extractFeatures(BinaryFunction &Function, BinaryContext &BC);
+  void extractFeatures(BinaryFunction &Function, 
+                       BinaryContext &BC,
+                       raw_ostream &Printer);
 
   /// dumpSuccessorFeatures - Dumps the feature information about the target
   /// BasicBlock of either the taken or the fallthrough paths of a given branch.
@@ -143,7 +145,8 @@ private:
 
   /// dumpFeatures - Dumps the feature information about each two-way branch
   /// from the program.
-  void dumpFeatures(raw_ostream &Printer, uint64_t FunctionAddress);
+  void dumpFeatures(raw_ostream &Printer, uint64_t FunctionAddress,
+		    uint64_t FunctionFrequency);
 
   /// dumpProfileData - Dumps a limited version of the inout profile data
   /// that contains only profile for conditional branches, unconditional

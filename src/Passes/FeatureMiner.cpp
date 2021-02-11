@@ -153,10 +153,23 @@ void FeatureMiner::addSuccessorInfo(DominatorAnalysis<false> &DA,
   SuccBBInfo->ToFunName = ToFun->getPrintName();
   SuccBBInfo->ToBb = Successor->getInputOffset();
 
-  auto Offset = BC.MIB->tryGetAnnotationAs<uint64_t>(Inst, "Offset");
+  auto Offset = BC.MIB->tryGetAnnotationAs<uint32_t>(Inst, "Offset");
   if (Offset) {
-    int64_t Delta = Successor->getInputOffset() - Offset.get();
-    BFI->DeltaTaken = std::abs(Delta);
+    uint32_t temp1 = Successor->getInputOffset();
+    //temp1 = (temp1 != UINT32_MAX) ? temp1 : 0;
+    uint32_t temp2 = Offset.get();
+    //temp2 = (temp2 != UINT32_MAX) ? temp2 : 0;
+
+    int64_t Delta = -1;
+    if(temp1 != UINT32_MAX && temp2 != UINT32_MAX){
+     if(temp1 > temp2)
+       Delta = temp1 - temp2;
+     else
+       Delta = temp2 - temp1;
+    }
+
+    // int64_t Delta = Successor->getInputOffset() - Offset.get();
+    BFI->DeltaTaken =  Delta;// std::abs(Delta);
   }
 
   if (SuccType) {
@@ -181,7 +194,8 @@ void FeatureMiner::addSuccessorInfo(DominatorAnalysis<false> &DA,
 }
 
 void FeatureMiner::extractFeatures(BinaryFunction &Function,
-                                   BinaryContext &BC) {
+                                   BinaryContext &BC,
+                                   raw_ostream &Printer){
   int8_t ProcedureType = getProcedureType(Function, BC);
   auto Info = DataflowInfoManager(BC, Function, nullptr, nullptr);
   auto &DA = Info.getDominatorAnalysis();
@@ -413,7 +427,191 @@ void FeatureMiner::extractFeatures(BinaryFunction &Function,
         }
       }
 
-      this->BranchesInfoSet.push_back(std::move(BFI));
+  //========================================================================
+
+
+    auto &FalseSuccessor = BFI->FalseSuccessor;
+    auto &TrueSuccessor = BFI->TrueSuccessor;
+
+    if (!FalseSuccessor && !TrueSuccessor)
+      continue;
+
+    int16_t ProcedureType = (BFI->ProcedureType.hasValue())
+                                ? static_cast<int16_t>(*(BFI->ProcedureType))
+                                : -1;
+
+    int16_t Direction =
+        (BFI->Direction.hasValue()) ? static_cast<bool>(*(BFI->Direction)) : -1;
+
+    int16_t LoopHeader = (BFI->LoopHeader.hasValue())
+                             ? static_cast<bool>(*(BFI->LoopHeader))
+                             : -1;
+
+    int32_t Opcode =
+        (BFI->Opcode.hasValue()) ? static_cast<int32_t>(*(BFI->Opcode)) : -1;
+
+    int32_t CmpOpcode = (BFI->CmpOpcode.hasValue())
+                            ? static_cast<int32_t>(*(BFI->CmpOpcode))
+                            : -1;
+
+    int64_t Count =
+        (BFI->Count.hasValue()) ? static_cast<int64_t>(*(BFI->Count)) : -1;
+
+    int64_t MissPredicted = (BFI->MissPredicted.hasValue())
+                                ? static_cast<int64_t>(*(BFI->MissPredicted))
+                                : -1;
+
+    int64_t FallthroughCount =
+        (BFI->FallthroughCount.hasValue())
+            ? static_cast<int64_t>(*(BFI->FallthroughCount))
+            : -1;
+
+    int64_t FallthroughMissPredicted =
+        (BFI->FallthroughMissPredicted.hasValue())
+            ? static_cast<int64_t>(*(BFI->FallthroughMissPredicted))
+            : -1;
+
+    int64_t NumOuterLoops = (BFI->NumOuterLoops.hasValue())
+                                ? static_cast<int64_t>(*(BFI->NumOuterLoops))
+                                : -1;
+    int64_t TotalLoops = (BFI->TotalLoops.hasValue())
+                             ? static_cast<int64_t>(*(BFI->TotalLoops))
+                             : -1;
+    int64_t MaximumLoopDepth =
+        (BFI->MaximumLoopDepth.hasValue())
+            ? static_cast<int64_t>(*(BFI->MaximumLoopDepth))
+            : -1;
+    int64_t LoopDepth = (BFI->LoopDepth.hasValue())
+                            ? static_cast<int64_t>(*(BFI->LoopDepth))
+                            : -1;
+    int64_t LoopNumExitEdges =
+        (BFI->LoopNumExitEdges.hasValue())
+            ? static_cast<int64_t>(*(BFI->LoopNumExitEdges))
+            : -1;
+    int64_t LoopNumExitBlocks =
+        (BFI->LoopNumExitBlocks.hasValue())
+            ? static_cast<int64_t>(*(BFI->LoopNumExitBlocks))
+            : -1;
+    int64_t LoopNumExitingBlocks =
+        (BFI->LoopNumExitingBlocks.hasValue())
+            ? static_cast<int64_t>(*(BFI->LoopNumExitingBlocks))
+            : -1;
+    int64_t LoopNumLatches = (BFI->LoopNumLatches.hasValue())
+                                 ? static_cast<int64_t>(*(BFI->LoopNumLatches))
+                                 : -1;
+    int64_t LoopNumBlocks = (BFI->LoopNumBlocks.hasValue())
+                                ? static_cast<int64_t>(*(BFI->LoopNumBlocks))
+                                : -1;
+    int64_t LoopNumBackEdges =
+        (BFI->LoopNumBackEdges.hasValue())
+            ? static_cast<int64_t>(*(BFI->LoopNumBackEdges))
+            : -1;
+
+    int64_t LocalExitingBlock =
+        (BFI->LocalExitingBlock.hasValue())
+            ? static_cast<bool>(*(BFI->LocalExitingBlock))
+            : -1;
+
+    int64_t LocalLatchBlock = (BFI->LocalLatchBlock.hasValue())
+                                  ? static_cast<bool>(*(BFI->LocalLatchBlock))
+                                  : -1;
+
+    int64_t LocalLoopHeader = (BFI->LocalLoopHeader.hasValue())
+                                  ? static_cast<bool>(*(BFI->LocalLoopHeader))
+                                  : -1;
+
+    int64_t Call =
+        (BFI->Call.hasValue()) ? static_cast<bool>(*(BFI->Call)) : -1;
+
+    // int64_t DeltaTaken = (BFI->DeltaTaken.hasValue())
+    //                          ? static_cast<int64_t>(*(BFI->DeltaTaken))
+    //                          : -1;
+    int64_t DeltaTaken = BFI->DeltaTaken;
+
+    int64_t NumLoads = (BFI->NumLoads.hasValue())
+                           ? static_cast<int64_t>(*(BFI->NumLoads))
+                           : -1;
+
+    int64_t NumStores = (BFI->NumStores.hasValue())
+                            ? static_cast<int64_t>(*(BFI->NumStores))
+                            : -1;
+
+    int64_t BasicBlockSize = (BFI->BasicBlockSize.hasValue())
+                                 ? static_cast<int64_t>(*(BFI->BasicBlockSize))
+                                 : -1;
+
+    int64_t NumBasicBlocks = (BFI->NumBasicBlocks.hasValue())
+                                 ? static_cast<int64_t>(*(BFI->NumBasicBlocks))
+                                 : -1;
+
+    int64_t NumCalls = (BFI->NumCalls.hasValue())
+                           ? static_cast<int64_t>(*(BFI->NumCalls))
+                           : -1;
+
+    int64_t NumSelfCalls = (BFI->NumSelfCalls.hasValue())
+                               ? static_cast<int64_t>(*(BFI->NumSelfCalls))
+                               : -1;
+
+    int64_t NumCallsExit = (BFI->NumCallsExit.hasValue())
+                               ? static_cast<int64_t>(*(BFI->NumCallsExit))
+                               : -1;
+
+    int64_t OperandRAType = (BFI->OperandRAType.hasValue())
+                                ? static_cast<int32_t>(*(BFI->OperandRAType))
+                                : -1;
+
+    int64_t OperandRBType = (BFI->OperandRBType.hasValue())
+                                ? static_cast<int32_t>(*(BFI->OperandRBType))
+                                : -1;
+
+    int64_t NumCallsInvoke = (BFI->NumCallsInvoke.hasValue())
+                                 ? static_cast<int64_t>(*(BFI->NumCallsInvoke))
+                                 : -1;
+
+    int64_t NumIndirectCalls =
+        (BFI->NumIndirectCalls.hasValue())
+            ? static_cast<int64_t>(*(BFI->NumIndirectCalls))
+            : -1;
+
+    int64_t NumTailCalls = (BFI->NumTailCalls.hasValue())
+                               ? static_cast<int64_t>(*(BFI->NumTailCalls))
+                               : -1;
+
+    Printer << BFI->Simple << "," << Opcode << "," << BFI->OpcodeStr << ","
+            << Direction << "," << CmpOpcode << "," << BFI->CmpOpcodeStr << ","
+            << LoopHeader << "," << ProcedureType << "," << Count << ","
+            << MissPredicted << "," << FallthroughCount << ","
+            << FallthroughMissPredicted << "," << NumOuterLoops << ","
+            << NumCallsExit << "," << TotalLoops << "," << MaximumLoopDepth
+            << "," << LoopDepth << "," << LoopNumExitEdges << ","
+            << LoopNumExitBlocks << "," << LoopNumExitingBlocks << ","
+            << LoopNumLatches << "," << LoopNumBlocks << "," << LoopNumBackEdges
+            << "," << LocalExitingBlock << "," << LocalLatchBlock << ","
+            << LocalLoopHeader << "," << Call << "," << DeltaTaken << ","
+            << NumLoads << "," << NumStores << "," << NumCalls << ","
+            << OperandRAType << "," << OperandRBType << "," << BasicBlockSize
+            << "," << NumBasicBlocks << "," << NumCallsInvoke << ","
+            << NumIndirectCalls << "," << NumTailCalls << "," << NumSelfCalls;
+
+    if (FalseSuccessor && TrueSuccessor) {
+      dumpSuccessorFeatures(Printer, TrueSuccessor);
+      dumpSuccessorFeatures(Printer, FalseSuccessor);
+
+      FalseSuccessor.reset();
+      TrueSuccessor.reset();
+    }
+    BFI.reset();
+
+    uint64_t fun_exec = Function.getExecutionCount();
+    fun_exec = (fun_exec !=  UINT64_MAX)? fun_exec : 0;
+    Printer << "," << Twine::utohexstr(Function.getAddress())
+            << "," << fun_exec << "\n";
+
+
+  //========================================================================
+
+
+      // this->BranchesInfoSet.push_back(std::move(BFI));
     }
   }
 }
@@ -495,7 +693,8 @@ void FeatureMiner::dumpSuccessorFeatures(raw_ostream &Printer,
 }
 
 void FeatureMiner::dumpFeatures(raw_ostream &Printer,
-                                uint64_t FunctionAddress) {
+                                uint64_t FunctionAddress,
+				                        uint64_t FunctionFrequency) {
 
   for (auto const &BFI : BranchesInfoSet) {
     auto &FalseSuccessor = BFI->FalseSuccessor;
@@ -591,9 +790,11 @@ void FeatureMiner::dumpFeatures(raw_ostream &Printer,
     int64_t Call =
         (BFI->Call.hasValue()) ? static_cast<bool>(*(BFI->Call)) : -1;
 
-    int64_t DeltaTaken = (BFI->DeltaTaken.hasValue())
-                             ? static_cast<int64_t>(*(BFI->DeltaTaken))
-                             : -1;
+    // int64_t DeltaTaken = (BFI->DeltaTaken.hasValue())
+    //                          ? static_cast<int64_t>(*(BFI->DeltaTaken))
+    //                          : -1;
+
+    int64_t DeltaTaken = BFI->DeltaTaken;
 
     int64_t NumLoads = (BFI->NumLoads.hasValue())
                            ? static_cast<int64_t>(*(BFI->NumLoads))
@@ -665,7 +866,8 @@ void FeatureMiner::dumpFeatures(raw_ostream &Printer,
       dumpSuccessorFeatures(Printer, FalseSuccessor);
     }
 
-    Printer << "," << Twine::utohexstr(FunctionAddress) << "\n";
+    Printer << "," << Twine::utohexstr(FunctionAddress)
+            << "," << FunctionFrequency  << "\n";
   }
   BranchesInfoSet.clear();
 }
@@ -683,14 +885,14 @@ void FeatureMiner::runOnFunctions(BinaryContext &BC) {
     return;
   }
 
-  auto FILENAME = "profile_data_regular.fdata";
+/*  auto FILENAME = "profile_data_regular.fdata";
   raw_fd_ostream Printer2(FILENAME, EC, sys::fs::F_None);
   if (EC) {
     dbgs() << "BOLT-WARNING: " << EC.message() << ", unable to open"
            << " " << FILENAME << " for output.\n";
     return;
   }
-
+*/
   // CSV file header
   Printer << "FUN_TYPE,OPCODE,OPCODE_STR,DIRECTION,CMP_OPCODE,CMP_OPCODE_STR,"
              "LOOP_HEADER,PROCEDURE_TYPE,"
@@ -714,12 +916,17 @@ void FeatureMiner::runOnFunctions(BinaryContext &BC) {
              "FS_TO_FUN_NAME,FS_TO_BB,FS_NUM_LOADS,FS_NUM_STORES,"
              "FS_BASIC_BLOCK_SIZE,FS_NUM_CALLS,FS_NUM_CALLS_EXIT,"
              "FS_NUM_INDIRECT_CALL,FS_NUM_CALLS_INVOKE,FS_NUM_TAIL_CALLS,"
-             "FUN_ENTRY_ADDRESS\n";
+             "FUN_ENTRY_ADDRESS,FUN_ENTRY_FREQUENCY\n";
 
   auto &BFs = BC.getBinaryFunctions();
   SBI = std::make_unique<StaticBranchInfo>();
   for (auto &BFI : BFs) {
     BinaryFunction &Function = BFI.second;
+
+    //if(Function.getPrintName().compare("main")==0){
+      //Function.dumpGraphForPass("unchecked-feature-miner");
+     // Function.dumpGraphToTextFile("unchecked-feature-miner");
+     //}
 
     if (Function.empty())
       continue;
@@ -728,13 +935,15 @@ void FeatureMiner::runOnFunctions(BinaryContext &BC) {
       const BinaryLoopInfo &LoopsInfo = Function.getLoopInfo();
       SBI->findLoopEdgesInfo(LoopsInfo);
     }
-    extractFeatures(Function, BC);
+    extractFeatures(Function, BC, Printer);
 
     SBI->clear();
 
-    dumpFeatures(Printer, Function.getAddress());
+  // outs() << "================================= done ======================================\n";
+    //dumpFeatures(Printer, Function.getAddress(),Function.getExecutionCount());
 
-    dumpProfileData(Function, Printer2);
+  //  dumpProfileData(Function, Printer2);
+  // errs()<<Function.getPrintName()<<" - DONE\n";
   }
 
   outs() << "BOLT-INFO: Dumping two-way conditional branches' features"
@@ -755,7 +964,7 @@ void FeatureMiner::dumpProfileData(BinaryFunction &Function,
           LastInst != (&Inst))
         continue;
 
-      auto Offset = BC.MIB->tryGetAnnotationAs<uint64_t>(Inst, "Offset");
+      auto Offset = BC.MIB->tryGetAnnotationAs<uint32_t>(Inst, "Offset");
 
       if (!Offset)
         continue;

@@ -26,6 +26,7 @@
 #include "ParallelUtilities.h"
 #include "Passes/BlockEdgeFrequency.h"
 #include "Passes/FeatureMiner.h"
+#include "Passes/FunctionCallFrequency.h"
 #include "Passes/ReorderFunctions.h"
 #include "Relocation.h"
 #include "RuntimeLibs/HugifyRuntimeLibrary.h"
@@ -156,6 +157,26 @@ DumpAll("dump-all",
   cl::desc("dump function CFGs to text file format after each stage"),
   cl::ZeroOrMore, cl::cat(BoltCategory));
 
+cl::opt<bool>
+GenFeatures("gen-features",
+  cl::desc("capture features useful for training an ML model on branch behavior"
+           " and save them in CSV format."),
+  cl::ZeroOrMore, cl::cat(InferenceCategory));
+
+cl::opt<bool>
+FreqInference("infer-local-counts",
+  cl::desc("calculates local blocks and edge frequencies for a function based "
+  "on its probabilities."),
+  cl::ZeroOrMore,
+  cl::cat(InferenceCategory));
+
+cl::opt<bool>
+FuncFreqInference("infer-global-counts",
+  cl::desc("calculates global function call and funtion invocation based on "
+  "intraprocedural block frequencies."),
+  cl::ZeroOrMore,
+  cl::cat(InferenceCategory));
+
 static cl::opt<bool>
 DumpEHFrame("dump-eh-frame",
   cl::desc("dump parsed .eh_frame (debugging)"),
@@ -171,24 +192,11 @@ ForceFunctionNames("funcs",
   cl::Hidden,
   cl::cat(BoltCategory));
 
-cl::opt<bool>
-FreqInference("infer-local-counts",
-  cl::desc("calculates local blocks and edge frequencies for a function based "
-  "on its probabilities."),
-  cl::ZeroOrMore,
-  cl::cat(InferenceCategory));
-
 static cl::opt<std::string>
 FunctionNamesFile("funcs-file",
   cl::desc("file with list of functions to optimize"),
   cl::Hidden,
   cl::cat(BoltCategory));
-
-cl::opt<bool>
-GenFeatures("gen-features",
-  cl::desc("capture features useful for training an ML model on branch behavior"
-           " and save them in CSV format."),
-  cl::ZeroOrMore, cl::cat(InferenceCategory));
 
 cl::opt<bool>
 HotFunctionsAtEnd(
@@ -576,7 +584,7 @@ void RewriteInstance::discoverStorage() {
     }
 
     if (!opts::GenFeatures && !opts::HeatmapMode &&
-        !opts::FreqInference && 
+        !opts::FreqInference && !opts::FuncFreqInference &&
         !(opts::AggregateOnly && BAT->enabledFor(InputFile)) &&
         (SectionName.startswith(getOrgSecPrefix()) ||
          SectionName == getBOLTTextSectionName())) {
@@ -817,11 +825,10 @@ void RewriteInstance::run() {
 
   processProfileData();
 
-  if (opts::GenFeatures) {
-    std::unique_ptr<FeatureMiner> FM =
-        llvm::make_unique<FeatureMiner>(opts::GenFeatures);
-    FM->runOnFunctions(*BC);
-    return;
+  if(opts::FuncFreqInference){
+    std::unique_ptr<FunctionCallFrequency>  FCF =
+    llvm::make_unique<FunctionCallFrequency>(opts::FuncFreqInference);
+    FCF->runOnFunctions(*BC);
   }
 
   if(opts::FreqInference){
@@ -830,7 +837,24 @@ void RewriteInstance::run() {
     BEF->runOnFunctions(*BC);
   }
 
+  /*
+  if (opts::GenFeatures) {
+    std::unique_ptr<FeatureMiner> FM =
+        llvm::make_unique<FeatureMiner>(opts::GenFeatures);
+    FM->runOnFunctions(*BC);
+    exit(1);
+  }*/
+
   postProcessFunctions();
+
+
+  if (opts::GenFeatures) {
+    std::unique_ptr<FeatureMiner> FM =
+        llvm::make_unique<FeatureMiner>(opts::GenFeatures);
+    FM->runOnFunctions(*BC);
+    exit(1);
+  }
+
 
   if (opts::DiffOnly)
     return;
@@ -1743,17 +1767,6 @@ void RewriteInstance::adjustCommandLineOptions() {
 
   if (opts::StrictMode && opts::Lite) {
     errs() << "BOLT-ERROR: -strict and -lite cannot be used at the same time\n";
-    exit(1);
-  }
-
-  if (opts::Lite) {
-    outs() << "BOLT-INFO: enabling lite mode\n";
-  }
-
-  if (!opts::SaveProfile.empty() && BAT->enabledFor(InputFile)) {
-    errs() << "BOLT-ERROR: unable to save profile in YAML format for input "
-              "file processed by BOLT. Please remove -w option and use branch "
-              "profile.\n";
     exit(1);
   }
 }
@@ -2869,7 +2882,6 @@ void RewriteInstance::emitAndLink() {
 
 void RewriteInstance::updateMetadata() {
   updateSDTMarkers();
-  updateLKMarkers();
 
   if (opts::UpdateDebugSections) {
     NamedRegionTimer T("updateDebugInfo", "update debug info", TimerGroupName,
@@ -2897,74 +2909,6 @@ void RewriteInstance::updateSDTMarkers() {
       continue;
     const auto NewAddress = F->translateInputToOutputAddress(OriginalAddress);
     SDTNotePatcher->addLE64Patch(SDTInfo.PCOffset, NewAddress);
-  }
-}
-
-void RewriteInstance::updateLKMarkers() {
-  if (BC->LKMarkers.size() == 0) {
-    return;
-  }
-
-  NamedRegionTimer T("updateLKMarkers", "update LK markers", TimerGroupName,
-                     TimerGroupDesc, opts::TimeRewrite);
-
-  std::unordered_map<std::string, uint64_t> PatchCounts;
-  for (auto &LKMarkerInfoKV : BC->LKMarkers) {
-    const auto OriginalAddress = LKMarkerInfoKV.first;
-    const auto *F =
-        BC->getBinaryFunctionContainingAddress(OriginalAddress, false, true);
-    if (!F) {
-      continue;
-    }
-    uint64_t NewAddress = F->translateInputToOutputAddress(OriginalAddress);
-    if (NewAddress == 0) {
-      continue;
-    }
-    // rather than making address range of BBL 64_bit use base for LK BBLs
-    if (OriginalAddress >= 0xffffffff00000000 && NewAddress < 0xffffffff) {
-      NewAddress = NewAddress + 0xffffffff00000000;
-    }
-    if (OriginalAddress == NewAddress) {
-      continue;
-    }
-    uint64_t NumEntries = LKMarkerInfoKV.second.size();
-    if (NumEntries > 1) {
-      DEBUG(dbgs() << "Original linux kernel address 0x"
-                   << Twine::utohexstr(OriginalAddress) << " belongs to "
-                   << NumEntries << " marker entries.\n";);
-    }
-    for (auto &LKMarkerInfo : LKMarkerInfoKV.second) {
-      const auto SectionName = LKMarkerInfo.SectionName;
-      SimpleBinaryPatcher *LKPatcher;
-      if (SectionPatchers.find(SectionName) != SectionPatchers.end()) {
-        LKPatcher = static_cast<SimpleBinaryPatcher *>(
-            SectionPatchers[SectionName].get());
-        PatchCounts[SectionName]++;
-      } else {
-        DEBUG(dbgs() << "Starting the patch for section, " << SectionName
-                     << '\n');
-        PatchCounts[SectionName] = 1;
-        SectionPatchers[SectionName] = llvm::make_unique<SimpleBinaryPatcher>();
-        LKPatcher = static_cast<SimpleBinaryPatcher *>(
-            SectionPatchers[SectionName].get());
-      }
-      DEBUG(dbgs() << "LK patching from address 0x"
-                   << Twine::utohexstr(OriginalAddress) << ','
-                   << " to address 0x" << Twine::utohexstr(NewAddress) << '\n');
-      if (LKMarkerInfo.IsPCRelative) {
-        LKPatcher->addLE32Patch(LKMarkerInfo.SectionOffset,
-                                NewAddress - OriginalAddress +
-                                    LKMarkerInfo.PCRelativeOffset);
-      } else {
-        LKPatcher->addLE64Patch(LKMarkerInfo.SectionOffset, NewAddress);
-      }
-    }
-  }
-  outs() << "BOLT-INFO: patching linux kernel sections. Total patches per "
-            "section are as follows:\n";
-  for (const auto &KV : PatchCounts) {
-    outs() << "  Section: " << KV.first << ", patch-counts: " << KV.second
-           << '\n';
   }
 }
 
@@ -4875,3 +4819,4 @@ bool RewriteInstance::isKSymtabSection(StringRef SectionName) {
 
   return false;
 }
+

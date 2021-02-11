@@ -57,6 +57,18 @@
   {}
 #endif
 
+
+#if defined(__APPLE__)
+extern "C" {
+extern uint64_t* _bolt_instr_locations_getter();
+extern uint32_t _bolt_num_counters_getter();
+
+extern uint8_t* _bolt_instr_tables_getter();
+extern uint32_t _bolt_instr_num_funcs_getter();
+}
+
+#else
+
 // Main counters inserted by instrumentation, incremented during runtime when
 // points of interest (locations) in the program are reached. Those are direct
 // calls and direct and indirect branches (local ones). There are also counters
@@ -95,6 +107,8 @@ extern void (*__bolt_trampoline_ind_tailcall)();
 extern void (*__bolt_instr_init_ptr)();
 extern void (*__bolt_instr_fini_ptr)();
 
+#endif
+
 namespace {
 
 /// A simple allocator that mmaps a fixed size region and manages this space
@@ -111,16 +125,23 @@ class BumpPtrAllocator {
   };
 
 public:
-  void *allocate(uintptr_t Size) {
+  void *allocate(size_t Size) {
     Lock L(M);
+
     if (StackBase == nullptr) {
+#if defined(__APPLE__)
+    int MAP_PRIVATE_MAP_ANONYMOUS = 0x1002;
+#else
+    int MAP_PRIVATE_MAP_ANONYMOUS = 0x22;
+#endif
       StackBase = reinterpret_cast<uint8_t *>(
           __mmap(0, MaxSize, 0x3 /* PROT_READ | PROT_WRITE*/,
                  Shared ? 0x21 /*MAP_SHARED | MAP_ANONYMOUS*/
-                        : 0x22 /* MAP_PRIVATE | MAP_ANONYMOUS*/,
+                        : MAP_PRIVATE_MAP_ANONYMOUS /* MAP_PRIVATE | MAP_ANONYMOUS*/,
                  -1, 0));
       StackSize = 0;
     }
+
     Size = alignTo(Size + sizeof(EntryMetadata), 16);
     uint8_t *AllocAddress = StackBase + StackSize + sizeof(EntryMetadata);
     auto *M = reinterpret_cast<EntryMetadata *>(StackBase + StackSize);
@@ -195,16 +216,16 @@ BumpPtrAllocator GlobalAlloc;
 // User-defined placement new operators. We only use those (as opposed to
 // overriding the regular operator new) so we can keep our allocator in the
 // stack instead of in a data section (global).
-void *operator new(uintptr_t Sz, BumpPtrAllocator &A) { return A.allocate(Sz); }
-void *operator new(uintptr_t Sz, BumpPtrAllocator &A, char C) {
+void *operator new(size_t Sz, BumpPtrAllocator &A) { return A.allocate(Sz); }
+void *operator new(size_t Sz, BumpPtrAllocator &A, char C) {
   auto *Ptr = reinterpret_cast<char *>(A.allocate(Sz));
   memSet(Ptr, C, Sz);
   return Ptr;
 }
-void *operator new[](uintptr_t Sz, BumpPtrAllocator &A) {
+void *operator new[](size_t Sz, BumpPtrAllocator &A) {
   return A.allocate(Sz);
 }
-void *operator new[](uintptr_t Sz, BumpPtrAllocator &A, char C) {
+void *operator new[](size_t Sz, BumpPtrAllocator &A, char C) {
   auto *Ptr = reinterpret_cast<char *>(A.allocate(Sz));
   memSet(Ptr, C, Sz);
   return Ptr;
@@ -544,7 +565,7 @@ FunctionDescription::FunctionDescription(const uint8_t *FuncDesc) {
 
 /// Read and mmap descriptions written by BOLT from the executable's notes
 /// section
-#ifdef HAVE_ELF_H
+#if defined(HAVE_ELF_H) and !defined(__APPLE__)
 ProfileWriterContext readDescriptions() {
   ProfileWriterContext Result;
   uint64_t FD = __open("/proc/self/exe",
@@ -603,16 +624,31 @@ ProfileWriterContext readDescriptions() {
   reportError(ErrMsg, sizeof(ErrMsg));
   return Result;
 }
+
 #else
+
 ProfileWriterContext readDescriptions() {
   ProfileWriterContext Result;
-  const char ErrMsg[] =
-    "BOLT instrumentation runtime error: unsupported binary format.\n";
-  reportError(ErrMsg, sizeof(ErrMsg));
+  uint8_t *Tables = _bolt_instr_tables_getter();
+  uint32_t IndCallDescSize = *reinterpret_cast<uint32_t *>(Tables);
+  uint32_t IndCallTargetDescSize =
+      *reinterpret_cast<uint32_t *>(Tables + 4 + IndCallDescSize);
+  uint32_t FuncDescSize = *reinterpret_cast<uint32_t *>(
+      Tables + 8 + IndCallDescSize + IndCallTargetDescSize);
+  Result.IndCallDescriptions =
+      reinterpret_cast<IndCallDescription *>(Tables + 4);
+  Result.IndCallTargets = reinterpret_cast<IndCallTargetDescription *>(
+      Tables + 8 + IndCallDescSize);
+  Result.FuncDescriptions =
+      Tables + 12 + IndCallDescSize + IndCallTargetDescSize;
+  Result.Strings = reinterpret_cast<char *>(
+      Tables + 12 + IndCallDescSize + IndCallTargetDescSize + FuncDescSize);
   return Result;
 }
+
 #endif
 
+#if !defined(__APPLE__)
 /// Debug by printing overall metadata global numbers to check it is sane
 void printStats(const ProfileWriterContext &Ctx) {
   char StatMsg[BufSize];
@@ -635,6 +671,8 @@ void printStats(const ProfileWriterContext &Ctx) {
   StatPtr = strCopy(StatPtr, "\n");
   __write(2, StatMsg, StatPtr - StatMsg);
 }
+#endif
+
 
 /// This is part of a simple CFG representation in memory, where we store
 /// a dynamically sized array of input and output edges per node, and store
@@ -697,6 +735,7 @@ Graph::Graph(BumpPtrAllocator &Alloc, const FunctionDescription &D,
     if (static_cast<int32_t>(D.Edges[I].ToNode) > MaxNodes)
       MaxNodes = D.Edges[I].ToNode;
   }
+
   for (int I = 0; I < D.NumLeafNodes; ++I) {
     if (static_cast<int32_t>(D.LeafNodes[I].Node) > MaxNodes)
       MaxNodes = D.LeafNodes[I].Node;
@@ -719,6 +758,7 @@ Graph::Graph(BumpPtrAllocator &Alloc, const FunctionDescription &D,
 
   // Initial allocations
   CFGNodes = new (Alloc) Node[MaxNodes];
+
   DEBUG(reportNumber("G->CFGNodes = 0x", (uint64_t)CFGNodes, 16));
   SpanningTreeNodes = new (Alloc) Node[MaxNodes];
   DEBUG(reportNumber("G->SpanningTreeNodes = 0x",
@@ -1093,25 +1133,31 @@ const uint8_t *writeFunctionProfile(int FD, ProfileWriterContext &Ctx,
   const FunctionDescription F(FuncDesc);
   const uint8_t *next = FuncDesc + F.getSize();
 
+#if !defined(__APPLE__)
+  uint64_t *bolt_instr_locations = __bolt_instr_locations;
+#else
+  uint64_t *bolt_instr_locations = _bolt_instr_locations_getter();
+#endif
+
   // Skip funcs we know are cold
 #ifndef ENABLE_DEBUG
   uint64_t CountersFreq = 0;
   for (int I = 0; I < F.NumLeafNodes; ++I) {
-    CountersFreq += __bolt_instr_locations[F.LeafNodes[I].Counter];
+    CountersFreq += bolt_instr_locations[F.LeafNodes[I].Counter];
   }
   if (CountersFreq == 0) {
     for (int I = 0; I < F.NumEdges; ++I) {
       const uint32_t C = F.Edges[I].Counter;
       if (C == 0xffffffff)
         continue;
-      CountersFreq += __bolt_instr_locations[C];
+      CountersFreq += bolt_instr_locations[C];
     }
     if (CountersFreq == 0) {
       for (int I = 0; I < F.NumCalls; ++I) {
         const uint32_t C = F.Calls[I].Counter;
         if (C == 0xffffffff)
           continue;
-        CountersFreq += __bolt_instr_locations[C];
+        CountersFreq += bolt_instr_locations[C];
       }
       if (CountersFreq == 0)
         return next;
@@ -1119,8 +1165,9 @@ const uint8_t *writeFunctionProfile(int FD, ProfileWriterContext &Ctx,
   }
 #endif
 
-  Graph *G = new (Alloc) Graph(Alloc, F, __bolt_instr_locations, Ctx);
+  Graph *G = new (Alloc) Graph(Alloc, F, bolt_instr_locations, Ctx);
   DEBUG(G->dump());
+
   if (!G->EdgeFreqs && !G->CallFreqs) {
     G->~Graph();
     Alloc.deallocate(G);
@@ -1162,6 +1209,7 @@ const uint8_t *writeFunctionProfile(int FD, ProfileWriterContext &Ctx,
   return next;
 }
 
+#if !defined(__APPLE__)
 const IndCallTargetDescription *
 ProfileWriterContext::lookupIndCallTarget(uint64_t Target) const {
   uint32_t B = 0;
@@ -1282,7 +1330,12 @@ int openProfile() {
   }
   return FD;
 }
+
+#endif
+
 } // anonymous namespace
+
+#if !defined(__APPLE__)
 
 /// Reset all counters in case you want to start profiling a new phase of your
 /// program independently of prior phases.
@@ -1460,3 +1513,47 @@ extern "C" void __bolt_instr_fini() {
     __bolt_instr_data_dump();
   DEBUG(report("Finished.\n"));
 }
+
+#endif
+
+#if defined(__APPLE__)
+
+extern "C" void __bolt_instr_data_dump() {
+  ProfileWriterContext Ctx = readDescriptions();
+
+  int FD = 2;
+  BumpPtrAllocator Alloc;
+  const uint8_t *FuncDesc = Ctx.FuncDescriptions;
+  uint32_t bolt_instr_num_funcs = _bolt_instr_num_funcs_getter();
+
+  for (int I = 0, E = bolt_instr_num_funcs; I < E; ++I) {
+    FuncDesc = writeFunctionProfile(FD, Ctx, FuncDesc, Alloc);
+    Alloc.clear();
+    DEBUG(reportNumber("FuncDesc now: ", (uint64_t)FuncDesc, 16));
+  }
+  assert(FuncDesc == (void *)Ctx.Strings,
+         "FuncDesc ptr must be equal to stringtable");
+}
+
+// On OSX/iOS the final symbol name of an extern "C" function/variable contains
+// one extra leading underscore: _bolt_instr_setup -> __bolt_instr_setup.
+extern "C"
+__attribute__((section("__TEXT,__setup")))
+__attribute__((force_align_arg_pointer))
+void _bolt_instr_setup() {
+  __asm__ __volatile__(SAVE_ALL :::);
+
+  report("Hello!\n");
+
+  __asm__ __volatile__(RESTORE_ALL :::);
+}
+
+extern "C"
+__attribute__((section("__TEXT,__fini")))
+__attribute__((force_align_arg_pointer))
+void _bolt_instr_fini() {
+  report("Bye!\n");
+  __bolt_instr_data_dump();
+}
+
+#endif

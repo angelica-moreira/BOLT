@@ -54,9 +54,12 @@ namespace bolt {
 class BlockEdgeFrequency : public BinaryFunctionPass {
 
 private:
-  static constexpr double SCALING_FACTOR = 10000.0;
-  static constexpr double EPSILON = 0.01 * SCALING_FACTOR;
-  static constexpr double LOOSEBOUND = 0.2 * SCALING_FACTOR;
+  //static constexpr 
+	  double SCALING_FACTOR = 100000.0; //10000.0;
+  //static constexpr 
+  double EPSILON = 0.01 * SCALING_FACTOR;
+  //static constexpr 
+  double LOOSEBOUND = 0.2 * SCALING_FACTOR;
 
   using Edge = StaticBranchInfo::Edge;
 

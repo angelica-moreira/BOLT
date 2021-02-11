@@ -414,7 +414,7 @@ void FunctionCallFrequency::updateFrequencyValues(BinaryContext &BC) {
             !BC.MIB->isReturn(Inst) && LastInst != (&Inst))
           continue;
 
-        auto Offset = BC.MIB->tryGetAnnotationAs<uint64_t>(Inst, "Offset");
+        auto Offset = BC.MIB->tryGetAnnotationAs<uint32_t>(Inst, "Offset");
         if (!Offset)
           continue;
 
@@ -462,7 +462,7 @@ void FunctionCallFrequency::dumpProfileData(BinaryFunction &Function,
       if (!BC.MIB->isCall(Inst))
         continue;
 
-      auto Offset = BC.MIB->tryGetAnnotationAs<uint64_t>(Inst, "Offset");
+      auto Offset = BC.MIB->tryGetAnnotationAs<uint32_t>(Inst, "Offset");
 
       if (!Offset)
         continue;
@@ -496,7 +496,7 @@ void FunctionCallFrequency::dumpProfileData(BinaryFunction &Function,
     if (!LastInst)
       continue;
 
-    auto Offset = BC.MIB->tryGetAnnotationAs<uint64_t>(*LastInst, "Offset");
+    auto Offset = BC.MIB->tryGetAnnotationAs<uint32_t>(*LastInst, "Offset");
 
     if (!Offset)
       continue;

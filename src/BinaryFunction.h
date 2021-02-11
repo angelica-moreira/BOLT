@@ -180,6 +180,9 @@ public:
   bool IsInjected = false;
 
 private:
+    void dfsPostOrderTraversal(BinaryBasicBlock *BB, 
+                              SmallVector<BinaryBasicBlock *, 16> &PostDFSSet);
+
   /// Current state of the function.
   State CurrentState{State::Empty};
 
@@ -847,6 +850,8 @@ public:
   /// them.
   void calculateLoopInfo();
 
+  bool hasIrreducibleCFG();
+
   /// Calculate missed macro-fusion opportunities and update BinaryContext
   /// stats.
   void calculateMacroOpFusionStats();
@@ -1447,6 +1452,10 @@ public:
   /// Return true if the function uses jump tables.
   bool hasJumpTables() const {
     return !JumpTables.empty();
+  }
+
+  uint64_t getNumJumpTables(){
+    return JumpTables.size();
   }
 
   /// Return true if the function has SDT marker
@@ -2240,6 +2249,14 @@ public:
   /// Get the edit distance of the new layout with respect to the previous
   /// layout after basic block reordering.
   uint64_t getEditDistance() const;
+
+  uint64_t DiffEditDistance;
+
+  void computeDiffEditDistance(BasicBlockOrderType &BasicBlocksPreviousLayout);
+
+  uint64_t getDiffEditDistance(){
+    return DiffEditDistance;
+  }
 
   /// Get the number of instructions within this function.
   uint64_t getInstructionCount() const;

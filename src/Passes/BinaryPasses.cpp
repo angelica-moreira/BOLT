@@ -257,6 +257,27 @@ TopCalledLimit("top-called-limit",
   cl::Hidden,
   cl::cat(BoltCategory));
 
+cl::opt<bool>
+FunStatsInfo("fun-stats-info", 
+   cl::desc("<data file>"),
+   cl::ZeroOrMore, 
+   cl::Hidden,
+   cl::cat(BoltOptCategory));
+
+cl::opt<bool>
+DumpProgramLayoutInfo("dump-program-layout", 
+   cl::desc("<data file>"),
+   cl::ZeroOrMore, 
+   cl::Hidden,
+   cl::cat(BoltOptCategory));
+
+cl::opt<bool>
+CompareExternalEditDistance("compare-external-edit-distance", 
+   cl::desc("<data file>"),
+   cl::ZeroOrMore, 
+   cl::Hidden,
+   cl::cat(BoltOptCategory));
+
 } // namespace opts
 
 namespace llvm {
@@ -333,6 +354,100 @@ bool ReorderBasicBlocks::shouldOptimize(const BinaryFunction &BF) const {
   return BinaryFunctionPass::shouldOptimize(BF);
 }
 
+void 
+ReorderBasicBlocks::parseEditDistanceFile(std::unique_ptr<MemoryBuffer> MemBuf, 
+                                          BinaryContext &BC){
+
+  std::vector<BasicBlockOffset> BasicBlockOffsets;
+  std::vector<BinaryBasicBlock *> BasicBlocksPreviousLayout;
+  auto populateBasicBlockOffsets =
+      [&](BinaryFunction &Function,
+          std::vector<BasicBlockOffset> &BasicBlockOffsets) {
+        for (auto &BB : Function) {
+          BasicBlockOffsets.emplace_back(
+              std::make_pair(BB.getInputOffset(), &BB));
+        }
+      };
+
+  auto getBasicBlockAtOffset = [&](uint64_t Offset) -> BinaryBasicBlock * {
+    if (BasicBlockOffsets.empty())
+      return nullptr;
+
+    auto It = std::upper_bound(
+        BasicBlockOffsets.begin(), BasicBlockOffsets.end(),
+        BasicBlockOffset(Offset, nullptr), CompareBasicBlockOffsets());
+    assert(It != BasicBlockOffsets.begin() &&
+           "first basic block not at offset 0");
+    --It;
+    auto *BB = It->second;
+    return (Offset == BB->getInputOffset()) ? BB : nullptr;
+  };
+
+auto ParsingBuf = MemBuf.get()->getBuffer();
+  BinaryFunction *Function = nullptr;
+  while (ParsingBuf.size() > 0) {
+    auto LineEnd = ParsingBuf.find_first_of("\n");
+    if (LineEnd == StringRef::npos) {
+      errs() << "BOLT-ERROR: File not in the correct format.\n";
+      exit(1);
+    }
+
+    StringRef Line = ParsingBuf.substr(0, LineEnd);
+    auto Type = Line.split(" ");
+    if (!Type.first.equals("BASIC_BLOCK") && !Type.first.equals("FUNCTION") &&
+        !Line.equals("END")) {
+      errs() << "BOLT-ERROR: File not in the correct format, found: " << Line
+             << "\n";
+      exit(1);
+    }
+
+    if (Type.first.equals("FUNCTION")) {
+      BasicBlockOffsets.clear();
+      auto FunLine = Type.second.split(" ");
+      //the first is the function name
+      //the second is the address
+      StringRef NumStr = FunLine.second;
+      uint64_t FunctionAddress;
+      if (NumStr.getAsInteger(16, FunctionAddress)) {
+        errs() << "BOLT-ERROR: File not in the correct format.\n";
+        exit(1);
+      }
+
+      Function = BC.getBinaryFunctionAtAddress(FunctionAddress);
+      if (Function){
+        populateBasicBlockOffsets(*Function, BasicBlockOffsets);
+      }
+    }
+
+    if (!Function){
+      ParsingBuf = ParsingBuf.drop_front(LineEnd + 1);
+      continue;
+    }
+    
+    if (Type.first.equals("BASIC_BLOCK")) {
+      StringRef BBAddressStr = Type.second;
+      uint64_t BBAddress;
+  
+      if (BBAddressStr.getAsInteger(16, BBAddress)) {
+        errs() << "BOLT-ERROR: File not in the correct format.\n";
+        exit(1);
+      }
+
+      auto BB = getBasicBlockAtOffset(BBAddress);
+      if (BB) {
+        BasicBlocksPreviousLayout.emplace_back(BB);
+      }
+    } else if (Line.equals("END")) {
+      Function->computeDiffEditDistance(BasicBlocksPreviousLayout);
+      BasicBlockOffsets.clear();
+      BasicBlocksPreviousLayout.clear();
+    }
+    
+    ParsingBuf = ParsingBuf.drop_front(LineEnd + 1);
+  }
+
+}
+
 void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
   if (opts::ReorderBlocks == ReorderBasicBlocks::LT_NONE)
     return;
@@ -359,6 +474,173 @@ void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
                    100.0 * ModifiedFuncCount.load() /
                        BC.getBinaryFunctions().size());
 
+//=============================================================================
+  if(opts::DumpProgramLayoutInfo){
+    auto FileName = "DiffEditDistance.txt";
+    outs() << "BOLT-INFO: Dumping program layout at file DiffEditDistance.txt\n";
+
+    std::error_code EC;
+    raw_fd_ostream Printer(FileName, EC, sys::fs::F_None);
+
+    if (EC) {
+      errs() << "BOLT-WARNING: " << EC.message() << ", unable to open "
+            << FileName << " for output.\n";
+      return;
+    }
+    
+    auto &BFs = BC.getBinaryFunctions();
+    for (auto It = BFs.begin(); It != BFs.end(); ++It) {
+     auto &Function = It->second;
+
+     Printer<<"FUNCTION " <<Function.getPrintName() <<" "
+            <<Twine::utohexstr(Function.getAddress())<<"\n";
+     auto &BBLayout = Function.getLayout();
+     for(auto *BB : BBLayout){
+       Printer<<"BASIC_BLOCK "<<Twine::utohexstr(BB->getInputOffset())<<"\n";
+     }
+     Printer<<"END\n";
+    }
+    Printer.close();
+  }
+
+
+  if(opts::CompareExternalEditDistance){
+    outs() << "BOLT-INFO: Loading the file DiffEditDistance.txt\n";
+    const Twine &FileName = "DiffEditDistance.txt";
+    auto MB = MemoryBuffer::getFileOrSTDIN(FileName);
+    if (auto EC = MB.getError()) {
+      errs() << "BOLT-ERROR: Cannot open "+FileName+" : "
+             << EC.message() << "\n";
+      return;
+    }
+    parseEditDistanceFile(std::move(MB.get()),BC);
+  }
+
+  /*
+   auto &BFs2 = BC.getBinaryFunctions();
+    for (auto It = BFs2.begin(); It != BFs2.end(); ++It) {
+     auto &Function = It->second;
+
+     for (auto &BB : Function) {
+      for (auto &Inst : BB) {
+        if (BC.MIB->isConditionalBranch(Inst)) {
+          errs() << '\n';
+          Inst.dump_pretty(errs(), BC.InstPrinter.get());
+          const auto Offset = BC.MIB->getAnnotationWithDefault<uint32_t>(Inst, "Offset");
+          BC.printInstruction(errs(), Inst, Offset, &Function);
+          errs() << '\n';
+        }
+      }
+    }
+   }
+*/
+
+  if(opts::FunStatsInfo){
+   auto &BFs = BC.getBinaryFunctions();
+   outs() << "Num_Functions: " << BFs.size() << "\n";
+   outs() << "\nBOLT-INFO: START of Printing Modified Function Statistics:\n";
+   unsigned NumIndirectBranches{0};
+   uint64_t IndexFun{1};
+   uint64_t TotalNumBBProgram{0};
+   //uint64_t TotalNumBBBoltedFunctions{0};
+   uint64_t TotalNumFunctionsProgram=BFs.size();
+   //uint64_t TotalNumBoltedFunctions{0};
+   uint64_t TotalProgramInstructions{0};
+
+   for (auto It = BFs.begin(); It != BFs.end(); ++It) {
+     auto &Function = It->second;
+     
+     /*if(Function.hasLayoutChanged()){
+	TotalNumBoltedFunctions+=1;
+	TotalNumBBBoltedFunctions+=Function.size();
+     }*/
+     TotalNumBBProgram+=Function.size();
+     TotalProgramInstructions+=Function.getInstructionCount();
+   }
+
+   //double RelativeTotalNumBoltedFunctions = static_cast<double>(TotalNumBoltedFunctions)/static_cast<double>(TotalNumFunctionsProgram);
+   //double RelativeTotalNumBBBolted = static_cast<double>(TotalNumBBBoltedFunctions)/static_cast<double>(TotalNumBBProgram);
+
+   if(BFs.size() > 0){
+    /* outs()<<"Index,Score,Num_Blocks,Num_Instructions,Fun_Name,Edit_Distance," 
+	   <<"Relative_Edit_Distance,Weighted_Relative_Edit_Distance,Num_Indirect_Branches,Num_Jump_Tables," 
+	   <<"Has_Jump_Table,Total_Num_Functions_Program,Total_Num_BB_Program," 
+	   <<"Total_Num_Bolted_Functions_Program,Total_Num_BB_Bolted_Functions_Program,"
+	   <<"Relative_Total_Num_Bolted_Functions_Program,Relative_Total_Num_BB_Bolted_Program\n";
+   */
+      if(opts::CompareExternalEditDistance){
+       outs()<<"Index,Score,Num_Blocks,Num_Instructions,Fun_Name,Edit_Distance,"
+             <<"Diff_Edit_Distance,Num_Indirect_Branches,Num_Jump_Tables,"
+             <<"Has_Jump_Table,Total_Program_Functions,Total_Program_BB,"
+             <<"Total_Program_Instructions,Function_Size\n";
+      }else{
+        outs()<<"Index,Score,Num_Blocks,Num_Instructions,Fun_Name,Edit_Distance,"
+             <<"Num_Indirect_Branches,Num_Jump_Tables,"
+             <<"Has_Jump_Table,Total_Program_Functions,Total_Program_BB,"
+             <<"Total_Program_Instructions,Function_Size\n";       
+      }
+   }
+   for (auto It = BFs.begin(); It != BFs.end(); ++It) {
+     auto &Function = It->second;
+
+     if(!Function.hasLayoutChanged())
+       continue;
+
+    // uint64_t EditDistance = Function.getEditDistance();
+     //uint64_t FunctionInstructionCount = Function.getInstructionCount();
+    // uint64_t FunSize = Function.size();
+    // double RelativeEditDistance = static_cast<double>(EditDistance)/static_cast<double>(FunSize);
+    // double WeightedRelativeEditDistance = RelativeEditDistance/static_cast<double>(FunctionInstructionCount);
+
+    for (auto &BB1 : Function) {
+     for (auto &Inst1 : BB1) {
+      if (BC.MIB->isIndirectBranch(Inst1)) {
+         ++NumIndirectBranches;
+       }
+      }
+     }
+
+     if(opts::CompareExternalEditDistance){
+      outs()<< IndexFun << ","
+            << Function.getFunctionScore() << ","
+            << Function.size() << ","
+            << Function.getInstructionCount() << ","
+            << Function.getPrintName() << ","
+            << Function.getEditDistance() << ","
+            << Function.getDiffEditDistance() << ","
+            << NumIndirectBranches << ","
+            << Function.getNumJumpTables()<< ","
+            << (Function.hasJumpTables()? "yes": "no") << ","
+            << TotalNumFunctionsProgram << ","
+            << TotalNumBBProgram<< ","
+            << TotalProgramInstructions <<","
+            << Function.getSize() << "\n";
+     }else{
+      outs()<< IndexFun << ","
+            << Function.getFunctionScore() << ","
+            << Function.size() << ","
+            << Function.getInstructionCount() << ","
+            << Function.getPrintName() << ","
+            << Function.getEditDistance() << ","
+            //<< RelativeEditDistance << ","
+            //<< WeightedRelativeEditDistance << ","
+            << NumIndirectBranches << ","
+            << Function.getNumJumpTables()<< ","
+            << (Function.hasJumpTables()? "yes": "no") << ","
+            << TotalNumFunctionsProgram << ","
+            << TotalNumBBProgram<< ","
+            << TotalProgramInstructions <<","
+            << Function.getSize() << "\n";
+            //<< TotalNumBoltedFunctions<< ","
+            //<< TotalNumBBBoltedFunctions<<  ",";
+            //<< RelativeTotalNumBoltedFunctions <<  ","
+            //<< RelativeTotalNumBBBolted<<"\n";
+     }
+     ++IndexFun;
+   }
+   outs() << "BOLT-INFO: END of Printing Modified Function Statistics:\n\n";
+  }
+//=============================================================================
   if (opts::PrintFuncStat > 0) {
     raw_ostream &OS = outs();
     // Copy all the values into vector in order to sort them
@@ -1775,3 +2057,5 @@ void SpecializeMemcpy1::runOnFunctions(BinaryContext &BC) {
 
 } // namespace bolt
 } // namespace llvm
+
+
