@@ -91,20 +91,28 @@ void StaticBranchProbabilities::setCFGBackEdgeProbability(Edge &CFGEdge,
 double
 StaticBranchProbabilities::getCFGEdgeProbability(Edge &CFGEdge,
                                                  BinaryFunction *Function) {
-  auto It = CFGEdgeProbabilities.find(CFGEdge);
-  if (It != CFGEdgeProbabilities.end()) {
-    if (static_cast<int64_t>(It->second) < 0 ||
-        static_cast<int64_t>(It->second) == INT64_MAX)
-      return 0;
-    return It->second;
-  }
-
+ 
   auto *BB = Function->getBasicBlockForLabel(CFGEdge.first);
   auto &BC = Function->getBinaryContext();
   auto LastInst = BB->getLastNonPseudoInstr();
+ 
+  auto It = CFGEdgeProbabilities.find(CFGEdge);
+  if (It != CFGEdgeProbabilities.end()) {
+    if (static_cast<int64_t>(It->second) < 0 ||
+        static_cast<int64_t>(It->second) == INT64_MAX){
+          return 0;
+        }
+    return It->second;
+  }
 
-  if (LastInst && BC.MIB->isConditionalBranch(*LastInst))
-    return 0.5;
+  if (LastInst && BC.MIB->isConditionalBranch(*LastInst)){
+     //if(opts::MLBased){
+//	Function->setExecutionCount(BinaryFunction::COUNT_NO_PROFILE);
+//	return 0.0;
+  //   }
+	  
+      return 0.5;
+  }
 
   return 1.0;
 }
@@ -119,11 +127,24 @@ StaticBranchProbabilities::getCFGEdgeProbability(BinaryBasicBlock &SrcBB,
   return getCFGEdgeProbability(CFGEdge, Function);
 }
 
+//==============
+int64_t 
+StaticBranchProbabilities::getFunctionFrequency(uint64_t FunAddress){
+  auto It = OriginalFunctionsFrequency.find(FunAddress);
+  if (It != OriginalFunctionsFrequency.end()) {
+    return It->second;
+  }
+  return -1;
+}
+
 void StaticBranchProbabilities::clear() {
   BSI->clear();
   CFGBackEdgeProbabilities.clear();
   CFGEdgeProbabilities.clear();
+  //OriginalFunctionsFrequency.clear();
 }
+//=================
+
 
 void StaticBranchProbabilities::parseProbabilitiesFile(
     std::unique_ptr<MemoryBuffer> MemBuf, BinaryContext &BC) {
@@ -170,21 +191,37 @@ void StaticBranchProbabilities::parseProbabilitiesFile(
       exit(1);
     }
 
+
     if (Type.first.equals("FUNCTION")) {
       clear();
       BasicBlockOffsets.clear();
       auto FunLine = Type.second.split(" ");
-      StringRef NumStr = FunLine.second;
+      //the first is the function name
+      //=======================================================================
+      StringRef NumStr = FunLine.second.split(" ").first;
       uint64_t FunctionAddress;
       if (NumStr.getAsInteger(16, FunctionAddress)) {
         errs() << "BOLT-ERROR: File not in the correct format.\n";
         exit(1);
       }
 
+      StringRef FunFreqStr = FunLine.second.split(" ").second;
+      uint64_t FunFreq;
+      if (FunFreqStr.getAsInteger(16, FunFreq)) {
+        errs() << "BOLT-ERROR: File not in the correct format.\n";
+        exit(1);
+      }
+
+     //========================================================================
       Function = BC.getBinaryFunctionAtAddress(FunctionAddress);
-      if (Function)
+      if (Function){
         populateBasicBlockOffsets(*Function, BasicBlockOffsets);
-      
+
+     //========================================================================
+        OriginalFunctionsFrequency[FunctionAddress] = FunFreq;
+     //========================================================================
+      }
+
     }
 
     if (!Function){
@@ -263,10 +300,11 @@ void StaticBranchProbabilities::computeProbabilities(BinaryFunction &Function) {
   for (auto &BB : Function) {
     BB.setExecutionCount(0);
 
-    if (BB.succ_size() == 0)
+    unsigned NumSucc = BB.succ_size();
+    if (NumSucc == 0)
       continue;
 
-    if (BB.succ_size() == 1) {
+    if (NumSucc == 1) {
       BinaryBasicBlock *SuccBB = *BB.succ_begin();
 
       BB.setSuccessorBranchInfo(*SuccBB, 0.0, 0.0);
@@ -275,7 +313,16 @@ void StaticBranchProbabilities::computeProbabilities(BinaryFunction &Function) {
       // Since it is an unconditional branch, when this branch is reached
       // it has a chance of 100% of being taken (1.0).
       CFGEdgeProbabilities[CFGEdge] = 1.0;
-    } else if (opts::MLBased) {
+    } 
+    else if(NumSucc > 2){
+      for (BinaryBasicBlock *SuccBB : BB.successors()) {
+        Edge CFGEdge = std::make_pair(BB.getLabel(), SuccBB->getLabel());
+        CFGEdgeProbabilities[CFGEdge] = 1.0 / NumSucc;
+        BB.setSuccessorBranchInfo(*SuccBB, 0.0, 0.0);
+      }
+    }
+    else if (opts::MLBased) {
+      double total_prob = 0.0;
       for (BinaryBasicBlock *SuccBB : BB.successors()) {
         uint64_t Frequency = BB.getBranchInfo(*SuccBB).Count;
         double EdgeProb = (Frequency == UINT64_MAX)
@@ -283,7 +330,30 @@ void StaticBranchProbabilities::computeProbabilities(BinaryFunction &Function) {
                               : Frequency / DIVISOR;
         Edge CFGEdge = std::make_pair(BB.getLabel(), SuccBB->getLabel());
         CFGEdgeProbabilities[CFGEdge] = EdgeProb;
+        total_prob += EdgeProb;
         BB.setSuccessorBranchInfo(*SuccBB, 0.0, 0.0);
+      }
+
+      if(total_prob == 0.0){
+        BinaryBasicBlock *TakenSuccBB = BB.getConditionalSuccessor(true);
+        BinaryBasicBlock *NotTakenSuccBB = BB.getConditionalSuccessor(false);
+        
+        if(TakenSuccBB && NotTakenSuccBB){
+          Edge CFGEdge =
+              std::make_pair(BB.getLabel(), NotTakenSuccBB->getLabel());
+          CFGEdgeProbabilities[CFGEdge] = 0.5;
+
+          CFGEdge = std::make_pair(BB.getLabel(), TakenSuccBB->getLabel());
+          CFGEdgeProbabilities[CFGEdge] = 0.5; 
+
+        }else if(NotTakenSuccBB){
+          Edge CFGEdge =
+              std::make_pair(BB.getLabel(), NotTakenSuccBB->getLabel());
+          CFGEdgeProbabilities[CFGEdge] = 1.0;
+        } else if (TakenSuccBB){
+          Edge CFGEdge = std::make_pair(BB.getLabel(), TakenSuccBB->getLabel());
+          CFGEdgeProbabilities[CFGEdge] = 1.0;         
+        }
       }
     } else {
       BinaryBasicBlock *TakenSuccBB = BB.getConditionalSuccessor(true);

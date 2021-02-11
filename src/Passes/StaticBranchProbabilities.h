@@ -90,11 +90,19 @@ private:
   /// Holds probabilities computed based on the input profile.
   std::map<Edge, double> CFGEdgeProbabilities;
 
+  //===========================================================================
+  /// Maps each function of the program with its dynamic frequency.
+  std::map<uint64_t, uint64_t> OriginalFunctionsFrequency;
+  //===========================================================================
 public:
   explicit StaticBranchProbabilities() {
     BSI = std::make_unique<StaticBranchInfo>();
     BHI = std::make_unique<BranchHeuristicsInfo>();
   }
+
+  //==========
+  int64_t getFunctionFrequency(uint64_t FunAddress);
+  //========
 
   void setCFGBackEdgeProbability(Edge &CFGEdge, double Prob);
 

@@ -144,6 +144,9 @@ void BlockEdgeFrequency::propagateLoopFrequencies(BinaryLoop *Loop) {
 
   // Get the loop header
   BinaryBasicBlock *LoopHeader = Loop->getHeader();
+  // if(LoopHeader->getFunction()->getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+  //   errs()<<" ========== LoopHeader " << LoopHeader->getName()<<"\n";
+  // }
 
   // Mark all blocks reachable from the loop head as not visited.
   tagReachableBlocks(LoopHeader);
@@ -155,10 +158,17 @@ void BlockEdgeFrequency::propagateLoopFrequencies(BinaryLoop *Loop) {
 void BlockEdgeFrequency::propagateFrequencies(BinaryBasicBlock *BB,
                                               BinaryBasicBlock *Head) {
 
-  DEBUG(dbgs() << "===============================>>>> "
-               << Head->getFunction()->getPrintName() << "\n");
-  DEBUG(dbgs() << "===== Current Basic block " << BB->getName() << " -  "
-               << " Head " << Head->getName() << " =======\n");
+  auto Function = Head->getFunction();
+  // // DEBUG(
+  //   if(Function->getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+  //   dbgs() << "===============================>>>> "
+  //              << Head->getFunction()->getPrintName() << "\n";
+  //             //  );
+  // // DEBUG(
+  //   dbgs() << "===== Current Basic block " << BB->getName() << " -  "
+  //              << " Head " << Head->getName() << " =======\n";
+  //             //  );
+  //   }
 
   // Checks if the basic block BB has been visited.
   if (isVisited(BB))
@@ -214,9 +224,12 @@ void BlockEdgeFrequency::propagateFrequencies(BinaryBasicBlock *BB,
       }
     }
 
-    DEBUG(dbgs() << "CURRENT BLOCK FREQUENCY:\n BlockFrequencies[ "
-                 << BB->getName() << " ] = " << getBBExecutionCount(*BB)
-                 << "\n CyclicProbability " << CyclicProbability << "\n");
+    // // DEBUG(
+    //   if(Function->getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+    //   dbgs() << "CURRENT BLOCK FREQUENCY:\n BlockFrequencies[ "
+    //              << BB->getName() << " ] = " << getBBExecutionCount(*BB)
+    //              << "\n CyclicProbability " << CyclicProbability << "\n";}
+    //             //  );
 
     // For a loop that terminates, the cyclic probability is less than one.
     // If a loop seems not to terminate the cyclic probability is higher than
@@ -224,7 +237,17 @@ void BlockEdgeFrequency::propagateFrequencies(BinaryBasicBlock *BB,
     // is higher than one, we need to set it to the maximum value offset by
     // the  constant EPSILON.
     double UpperBound = SCALING_FACTOR - (EPSILON);
-    if (CyclicProbability > UpperBound) {
+    int64_t intBBCount = getBBExecutionCount(*BB)/SCALING_FACTOR;
+    int64_t intCyclicProbability = CyclicProbability / SCALING_FACTOR;
+    UpperBound = 1 - 0.001;
+
+    // if(Function->getPrintName().compare("__libc_csu_init")==0){
+    //   errs()<<"UpperBound "<<UpperBound << "\n";
+    //   errs()<<"intBBCount "<<intBBCount << "\n";
+    //   errs()<<"intCyclicProbability "<<intCyclicProbability << "\n";
+    // }
+
+    if (intCyclicProbability > UpperBound) {
       CyclicProbability = UpperBound;
     }
 
@@ -235,11 +258,21 @@ void BlockEdgeFrequency::propagateFrequencies(BinaryBasicBlock *BB,
     BBExecCount =
         (BBExecCount == INT64_MAX || BBExecCount < 0) ? 0 : BBExecCount;
 
+    // if(Function->getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+    //   // errs()<<"UpperBound "<<UpperBound << "\n";
+    //   // errs()<<"intBBCount "<<intBBCount << "\n";
+    //   // errs()<<"intCyclicProbability "<<intCyclicProbability << "\n";
+    //   errs()<<"BBExecCount "<<BBExecCount<<"\n";
+    // }
+
     BB->setExecutionCount(BBExecCount);
 
-    DEBUG(dbgs() << "UPDATED BLOCK FREQUENCY\n BlockFrequencies[ "
-                 << BB->getName() << " ] = " << BB->getKnownExecutionCount()
-                 << "\n CyclicProbability " << CyclicProbability << "\n");
+  //  if(Function->getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+  //   // DEBUG(
+  //     dbgs() << "UPDATED BLOCK FREQUENCY\n BlockFrequencies[ "
+  //                << BB->getName() << " ] = " << BB->getKnownExecutionCount()
+  //                << "\n CyclicProbability " << CyclicProbability << "\n";}
+  //               //  );
   }
 
   // Mark the basic block BB as visited.
@@ -252,30 +285,44 @@ void BlockEdgeFrequency::propagateFrequencies(BinaryBasicBlock *BB,
     double EdgeFreq = EdgeProb * getBBExecutionCount(*BB);
     EdgeFreq = (EdgeFreq == DBL_MAX || EdgeFreq < 0.0) ? 0.0 : EdgeFreq;
 
-    DEBUG(dbgs() << "CURRENT EDGE FREQ INFO:\n " << BB->getName() << " -> "
-                 << SuccBB->getName() << " : "
-                 << getCFGEdgeFrequency(*BB, *SuccBB) << "\n");
+  //  if(Function->getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+  //    errs()<<"EdgeProb "<<EdgeProb<<"\n";
+
+  //   // DEBUG(
+  //     dbgs() << "CURRENT EDGE FREQ INFO:\n " << BB->getName() << " -> "
+  //                << SuccBB->getName() << " : "
+  //                << getCFGEdgeFrequency(*BB, *SuccBB) << "\n";}
+  //               //  );
 
     BB->setSuccessorBranchInfo(*SuccBB, static_cast<int64_t>(round(EdgeFreq)),
                                0);
 
-    DEBUG(dbgs() << "UPDATED EDGE FREQ INFO:\n " << BB->getName() << " -> "
-                 << SuccBB->getName() << " : "
-                 << getCFGEdgeFrequency(*BB, *SuccBB) << "\n");
+  //  if(Function->getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+  //   // DEBUG(
+  //     dbgs() << "UPDATED EDGE FREQ INFO:\n " << BB->getName() << " -> "
+  //                << SuccBB->getName() << " : "
+  //                << getCFGEdgeFrequency(*BB, *SuccBB) << "\n";}
+  //               //  );
 
     // Update back edge probability, in case the current successor is equal
     // to the head so it can be used by outer loops to calculate cyclic
     // probabilities of inner loops.
     if (SuccBB == Head) {
-      DEBUG(dbgs() << "CURRENT BACK EDGE PROB INFO:\n " << BB->getName()
-                   << " -> " << SuccBB->getName() << " : "
-                   << SBP->getCFGBackEdgeProbability(*BB, *SuccBB) << "\n");
+      // // DEBUG(
+      //      if(Function->getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+      //   dbgs() << "CURRENT BACK EDGE PROB INFO:\n " << BB->getName()
+      //              << " -> " << SuccBB->getName() << " : "
+      //              << SBP->getCFGBackEdgeProbability(*BB, *SuccBB) << "\n";}
+      //             //  );
 
       SBP->setCFGBackEdgeProbability(CFGEdge, EdgeFreq);
 
-      DEBUG(dbgs() << "UPDATED BACK EDGE PROB INFO:\n " << BB->getName()
-                   << " -> " << SuccBB->getName() << " : "
-                   << SBP->getCFGBackEdgeProbability(*BB, *SuccBB) << "\n");
+  //  if(Function->getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+  //     // DEBUG(
+  //       dbgs() << "UPDATED BACK EDGE PROB INFO:\n " << BB->getName()
+  //                  << " -> " << SuccBB->getName() << " : "
+  //                  << SBP->getCFGBackEdgeProbability(*BB, *SuccBB) << "\n";}
+  //                 //  );
     }
   }
 
@@ -313,18 +360,99 @@ bool BlockEdgeFrequency::checkPrecision(BinaryFunction &Function) const {
     }
   }
 
+    //  if(Function.getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+    //    errs()<< "OutFreq "<<OutFreq<<"\n";
+    //  }
+
   // Checks if the calculated frequency is within the defined boundary.
+  // return (
+  //     OutFreq >= static_cast<uint64_t>(round(SCALING_FACTOR - (LOOSEBOUND))) &&
+  //     OutFreq <= static_cast<uint64_t>(round(SCALING_FACTOR + (LOOSEBOUND))));
+
+    // if(!(OutFreq >= static_cast<uint64_t>(round(SCALING_FACTOR - (LOOSEBOUND))))){
+    //   uint64_t t = static_cast<uint64_t>(round(SCALING_FACTOR - (LOOSEBOUND)));
+    //   errs()<<Function.getPrintName() <<" - OutFreq "<<OutFreq
+    //         <<" static_cast<uint64_t>(round(SCALING_FACTOR - (LOOSEBOUND))) "
+    //         <<t <<"\n";
+    // }
+
+//    return 
+  //    OutFreq >= static_cast<uint64_t>(round(SCALING_FACTOR - (LOOSEBOUND)));
   return (
-      OutFreq >= static_cast<uint64_t>(round(SCALING_FACTOR - (LOOSEBOUND))) &&
-      OutFreq <= static_cast<uint64_t>(round(SCALING_FACTOR + (LOOSEBOUND))));
+      OutFreq >= static_cast<int64_t>(round(SCALING_FACTOR - (LOOSEBOUND))) &&
+      OutFreq <= static_cast<int64_t>(round(SCALING_FACTOR + (LOOSEBOUND))));
 }
 
 void BlockEdgeFrequency::updateLocalCallFrequencies(BinaryFunction &Function) {
   BinaryContext &BC = Function.getBinaryContext();
+
+  //   for (auto &BB : Function) {
+  //   for (auto &Inst : BB) {
+  //     if(BC.MIB->isIndirectBranch(Inst)){
+  //     //  errs()<<"&&&&&& Function name "<<Function.getPrintName()<<" Basic block "<< BB.getName() <<"\n";
+  //     //  errs()<<" ** Feature Indirect Branch!!!! \n";
+  //     //  if (BC.MIB->isCall(Inst)){
+  //     //    errs()<<" ** Feature It is a call! \n";
+  //     //    Inst.dump();
+  //     //  }
+  //      if(const auto *JT = Function.getJumpTable(Inst)){
+  //        errs()<<" ** Feature printing jump table \n";
+  //        JT->print(errs());
+  //       //  Inst.dump();
+  //      }
+  //    }
+  //   }
+  // }
+
+
+
   for (auto &BB : Function) {
     uint64_t TakenFreqEdge = getBBExecutionCount(BB);
+    // if(Function.getPrintName().compare("main")==0){
+    //   errs()<<"================== Dump BB "<<BB.getName()<<"\n";
+    //   errs()<<"TakenFreqEdge "<<TakenFreqEdge<<"\n";
+    //   // BB.dump();
 
+    //   Function.dumpGraphForPass("unchecked-block-edge-frequency");
+    //   Function.dumpGraphToTextFile("unchecked-block-edge-frequency");
+    // }
     for (auto &Inst : BB) {
+
+    //   if(BC.MIB->isIndirectBranch(Inst)){
+    //     if(Function.getPrintName().compare("main")==0){
+    //       errs()<<"%%<<< Indirect Branch!!!! \n";
+          
+          // if (BC.MIB->isCall(Inst)){
+          //   errs()<<"%%<<<< It is a call! \n";
+          // }
+          // else{
+          //   errs()<<"%%<<<< NOT NOT NOT NOT NOT NOT NOT a call! \n";
+          // }
+          // if(const auto *JT = Function.getJumpTable(Inst)){
+          //   errs()<<"%%<<< printing jump table \n";
+          //   JT->print(errs());
+            // JT->Count += 1;//TakenFreqEdge;
+            // errs()<<"TakenFreqEdge "<<TakenFreqEdge<<"\n";
+            // errs()<<"Size: "<<JT->getSize()<<"\n";
+            // errs()<<"Type: "<<JT->Type<<"\n";
+            // errs()<<"Count: "<<JT->Count<<"\n";
+            // errs()<<"EntrySize: "<<JT->EntrySize<<"\n";
+            // errs()<<"Entries Size: "<<JT->Entries.size()<<"\n";
+
+            // if (JT->Counts.empty())
+            //   JT->Counts.resize(JT->Entries.size());
+
+    //         int a = JT->Entries.size();
+    //         for(int i=0; i<a; i++ ){
+    //           // if(JT->Counts.empty()){
+    //           //    JT->Counts[i].Count += round(TakenFreqEdge/a);
+    //           // }
+    //           errs()<<"Counts " <<JT->Counts.size()<<"\n";
+              
+    //         }
+    //       }
+    //     }
+    //  }
       if (!BC.MIB->isCall(Inst))
         continue;
 
@@ -345,6 +473,34 @@ void BlockEdgeFrequency::updateLocalCallFrequencies(BinaryFunction &Function) {
       }
     }
   }
+
+
+  // Function.postProcessProfile();
+
+
+  //   for (auto &BB : Function) {
+  //   for (auto &Inst : BB) {
+  //     if(BC.MIB->isIndirectBranch(Inst)){
+  //     //  errs()<<"&&&&&& after Function name "<<Function.getPrintName()<<" Basic block "<< BB.getName() <<"\n";
+  //     //  errs()<<" ** after Feature Indirect Branch!!!! \n";
+  //     //  if (BC.MIB->isCall(Inst)){
+  //     //    errs()<<" ** after Feature It is a call! \n";
+  //     //    Inst.dump();
+  //     //  }
+  //     //  if(const auto *JT = Function.getJumpTable(Inst)){
+  //     //    errs()<<" ** after Feature printing jump table \n";
+  //     //   errs()<<"Size: "<<JT->getSize()<<"\n";
+  //     //    errs()<<"Type: "<<JT->Type<<"\n";
+  //     //    errs()<<"Count: "<<JT->Count<<"\n";
+  //     //    errs()<<"EntrySize: "<<JT->EntrySize<<"\n";
+  //     //    errs()<<"EntrySize: "<<JT->Entries.size()<<"\n";
+  //     //    JT->print(errs());
+  //     //   //  Inst.dump();
+  //     //  }
+  //    }
+  //   }
+  // }
+
 }
 
 void BlockEdgeFrequency::dumpProfileData(BinaryFunction &Function,
@@ -358,7 +514,7 @@ void BlockEdgeFrequency::dumpProfileData(BinaryFunction &Function,
       if (!BC.MIB->isCall(Inst))
         continue;
 
-      auto Offset = BC.MIB->tryGetAnnotationAs<uint64_t>(Inst, "Offset");
+      auto Offset = BC.MIB->tryGetAnnotationAs<uint32_t>(Inst, "Offset");
 
       if (!Offset)
         continue;
@@ -399,7 +555,7 @@ void BlockEdgeFrequency::dumpProfileData(BinaryFunction &Function,
     if (!LastInst)
       continue;
 
-    auto Offset = BC.MIB->tryGetAnnotationAs<uint64_t>(*LastInst, "Offset");
+    auto Offset = BC.MIB->tryGetAnnotationAs<uint32_t>(*LastInst, "Offset");
 
     if (!Offset)
       continue;
@@ -438,16 +594,29 @@ double BlockEdgeFrequency::getLocalBlockFrequency(BinaryBasicBlock *BB) {
 }
 
 void BlockEdgeFrequency::computeBlockEdgeFrequencies(BinaryFunction &Function) {
-
+//  if(Function.getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+//       errs()<<" ==== ENTRANDO ==== \n";
+//     }
+    bool tinha = false;
   if (!Function.isLoopFree()) {
+    // if(Function.getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+    //   errs()<<" Nao eh loop free \n";
+    // }
+    tinha = true;
     // Discover all loops of this function.
-    Function.calculateLoopInfo();
+    // Function.calculateLoopInfo();
     const BinaryLoopInfo &LoopInfo = Function.getLoopInfo();
     // Find all loop headers and loop back edges of this function.
     BSI->findLoopEdgesInfo(LoopInfo);
     for (BinaryLoop *BL : LoopInfo)
       propagateLoopFrequencies(BL);
   }
+
+
+//  if(Function.getPrintName().compare("_ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EEC2ERKS7_/1(*2)")==0){
+//      if(!tinha)
+//       errs()<<" ==== NAO TEM LOOP ==== \n";
+//     }
 
   /// Propagates the frequencies for all the basic blocks of the function
   /// making the entry block as the head of the function.
@@ -466,24 +635,51 @@ void BlockEdgeFrequency::clear() {
 }
 
 bool BlockEdgeFrequency::computeFrequencies(BinaryFunction &Function) {
+  //Function.markProfiled(BinaryFunction::PF_SAMPLE);
   computeBlockEdgeFrequencies(Function);
-
+ // Function.postProcessCFG();
+ // Function.postProcessProfile();
   // Checks if the computed frequencies are inside the precision
   // boundary.
+     //if(Function.getPrintName().compare("main") == 0 ){
+      //Function.dumpGraphForPass("unchecked-block-edge-frequency");
+      //Function.dumpGraphToTextFile("unchecked-block-edge-frequency");
+     //}
   bool Holds = checkPrecision(Function);
   if (Holds) {
     updateLocalCallFrequencies(Function);
     Function.markProfiled(BinaryFunction::PF_SAMPLE);
     Function.setExecutionCount(SCALING_FACTOR);
+    // Function.postProcessProfile();
   } else {
+    // Function.postProcessProfile();
+    
+    // if(Function.getPrintName().compare("main")==0){
+      // Function.dumpGraphForPass("unchecked-block-edge-frequency");
+      // Function.dumpGraphToTextFile("unchecked-block-edge-frequency");
+    // }
+
+  // for (auto &BB : Function) {
+  //   auto LastInst = BB.getLastNonPseudoInstr();
+  //    errs()<<"size "<<BB.succ_size()<<"\n";
+
+  //   for(BinaryBasicBlock *SuccBB : BB.successors()){
+  //     errs()<<"Teste prob "<<SBP->getCFGEdgeProbability(BB, *SuccBB)<<"\n";
+  //   }
+
+  // }
+
+      // Function.dumpGraphForPass("unchecked-block-edge-frequency");
+      // Function.dumpGraphToTextFile("unchecked-block-edge-frequency");
 
     Function.setExecutionCount(BinaryFunction::COUNT_NO_PROFILE);
 
-    for (auto &BB : Function) {
-      BB.setExecutionCount(0);
-    }
+    // for (auto &BB : Function) {
+    //   BB.setExecutionCount(0);
+    // }
 
-    updateLocalCallFrequencies(Function);
+    Function.clearProfile();
+    // updateLocalCallFrequencies(Function);
 
     DEBUG(dbgs() << "BOLT-DEBUG: The local block and flow edge frequencies\n"
                  << " for function: " << Function.getPrintName()
@@ -523,14 +719,16 @@ void BlockEdgeFrequency::runOnFunctions(BinaryContext &BC) {
 
   const char *FileName = "localFrequencies.fdata";
 
-  DEBUG(dbgs() << "BOLT-DEBUG: dumping local static infered frequencies to "
+  DEBUG(
+    dbgs() << "BOLT-DEBUG: dumping local static infered frequencies to "
                << FileName << "\n";
         std::error_code EC;
         raw_fd_ostream Printer(FileName, EC, sys::fs::F_None); if (EC) {
           dbgs() << "BOLT-ERROR: " << EC.message() << ", unable to open "
                  << FileName << " for output.\n";
           return;
-        });
+        }
+        );
 
   uint64_t Unchecked = 0;
   uint64_t Checked = 0;
@@ -539,7 +737,7 @@ void BlockEdgeFrequency::runOnFunctions(BinaryContext &BC) {
 
     BinaryFunction &Function = BFI.second;
 
-    if (Function.empty())
+    if (Function.empty() || (Function.getExecutionCount()!=1 && opts::MLBased))
       continue;
 
     for (auto &B : Function) {
@@ -549,8 +747,22 @@ void BlockEdgeFrequency::runOnFunctions(BinaryContext &BC) {
   for (auto &BFI : BFs) {
 
     BinaryFunction &Function = BFI.second;
-    if (Function.empty())
+    if (Function.empty() || (Function.getExecutionCount()!=1 && opts::MLBased))
       continue;
+
+
+    //=====================
+   /* 
+    SCALING_FACTOR = SBP->getFunctionFrequency(Function.getAddress());
+    if(SCALING_FACTOR == -1)
+      SCALING_FACTOR = 100000.0;//10000.0;
+    //else if (SCALING_FACTOR < 1000)
+      //SCALING_FACTOR *= 100000.0;
+
+    EPSILON = 0.01 * SCALING_FACTOR;
+    LOOSEBOUND = 0.2 * SCALING_FACTOR;
+    */
+    //=====================
 
     BinaryBasicBlock &EntryBB = (*Function.begin());
     if (!Function.hasProfile()) {
@@ -568,29 +780,35 @@ void BlockEdgeFrequency::runOnFunctions(BinaryContext &BC) {
     else 
       SBP->computeProbabilities(Function);
 
+    //if(Function.getExecutionCount() != BinaryFunction::COUNT_NO_PROFILE)
     Function.setExecutionCount(SCALING_FACTOR);
     bool Holds = computeFrequencies(Function);
     if (Holds) {
       ++Checked;
 
-      DEBUG(std::error_code EC;
+      DEBUG(
+        std::error_code EC;
             raw_fd_ostream Printer(FileName, EC, sys::fs::F_Append); if (EC) {
               dbgs() << "BOLT-WARNING: " << EC.message() << ", unable to open"
                      << " " << FileName << " for output.\n";
               return;
-            } dumpProfileData(Function, Printer););
+            } dumpProfileData(Function, Printer);
+            );
 
-    } else
+    } else{
+      // errs()<<"Function name "<<Function.getPrintName()<<"\n";
       ++Unchecked;
+    }
 
     clear();
   }
 
-  DEBUG(
+  // DEBUG(
       dbgs() << "BOLT-DEBUG: Number of unchecked functions: " << Unchecked
              << "\nBOLT-DEBUG: Number of functions that cheked: " << Checked
              << "\nBOLT-DEBUG: Total number of functions that were processed: "
-             << (Checked + Unchecked) << "\n";);
+             << (Checked + Unchecked) << "\n";
+            //  );
 
   outs() << "BOLT-INFO: the BB counts and local Edge counts where updated"
          << " based on intraprodecural inference.\n";
@@ -598,4 +816,5 @@ void BlockEdgeFrequency::runOnFunctions(BinaryContext &BC) {
 
 } // namespace bolt
 } // namespace llvm
+
 

@@ -529,3 +529,4 @@ void BinaryFunctionPassManager::runAllPasses(BinaryContext &BC) {
 
 } // namespace bolt
 } // namespace llvm
+

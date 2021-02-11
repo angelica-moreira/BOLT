@@ -144,6 +144,17 @@ private:
   void modifyFunctionLayout(BinaryFunction &Function,
                             LayoutType Type,
                             bool MinBranchClusters) const;
+
+  void parseEditDistanceFile(std::unique_ptr<MemoryBuffer> MemBuf,
+                             BinaryContext &BC);
+
+  using BasicBlockOffset = std::pair<uint64_t, BinaryBasicBlock *>;
+  struct CompareBasicBlockOffsets {
+    bool operator()(const BasicBlockOffset &A,
+                    const BasicBlockOffset &B) const {
+      return A.first < B.first;
+    }
+  };
 public:
   explicit ReorderBasicBlocks(const cl::opt<bool> &PrintPass)
     : BinaryFunctionPass(PrintPass) { }

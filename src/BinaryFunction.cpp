@@ -57,6 +57,7 @@ extern cl::OptionCategory InferenceCategory;
 
 extern cl::opt<bool> EnableBAT;
 extern cl::opt<bool> FreqInference;
+extern cl::opt<bool> FuncFreqInference;
 extern cl::opt<bool> GenFeatures;
 extern cl::opt<bool> Instrument;
 extern cl::opt<bool> StrictMode;
@@ -2826,7 +2827,8 @@ bool BinaryFunction::finalizeCFIState() {
 
 bool BinaryFunction::requiresAddressTranslation() const {
   return opts::EnableBAT || hasSDTMarker() || 
-         opts::GenFeatures || opts::FreqInference;
+         opts::GenFeatures || opts::FreqInference|| 
+         opts::FuncFreqInference;
 }
 
 uint64_t BinaryFunction::getInstructionCount() const {
@@ -2844,6 +2846,13 @@ bool BinaryFunction::hasLayoutChanged() const {
 uint64_t BinaryFunction::getEditDistance() const {
   return ComputeEditDistance<BinaryBasicBlock *>(BasicBlocksPreviousLayout,
                                                  BasicBlocksLayout);
+}
+
+void
+BinaryFunction::computeDiffEditDistance(BasicBlockOrderType &BasicBlocksPreviousLayout){
+  DiffEditDistance = ComputeEditDistance<BinaryBasicBlock *>(
+                                                    BasicBlocksPreviousLayout,
+                                                    BasicBlocksLayout);
 }
 
 void BinaryFunction::clearDisasmState() {
@@ -4464,5 +4473,78 @@ bool BinaryFunction::isAArch64Veneer() const {
   return true;
 }
 
+
+void BinaryFunction::dfsPostOrderTraversal(BinaryBasicBlock *BB,
+                              SmallVector<BinaryBasicBlock *, 16> &PostDFSSet) {
+  if (!BB)
+    return;
+
+  errs()<<"Current Head "<<BB->getName() <<"\n";
+  // Adding the new successors into the call stack.
+  for (BinaryBasicBlock *SuccBB : BB->successors()) {
+    if(SuccBB->succ_size() == 0 ){
+      PostDFSSet.push_back(SuccBB);
+       errs()<<"  -> Terminal Succ "<<SuccBB->getName() <<"\n";
+      continue;
+    }
+    dfsPostOrderTraversal(SuccBB, PostDFSSet);
+  }
+
+  PostDFSSet.push_back(BB);
+}
+
+
+/// Whether or not the current loop has irreducible CFG.
+bool BinaryFunction::hasIrreducibleCFG() {
+  SmallVector<BinaryBasicBlock *, 16> PostDFSSet;
+
+  if (!this->hasLoopInfo()) {
+    this->calculateLoopInfo();
+  }
+
+  const BinaryLoopInfo &LoopsInfo = this->getLoopInfo();
+  std::stack<BinaryLoop *> Loops;
+  for (BinaryLoop *BL : LoopsInfo)
+    Loops.push(BL);
+
+  BinaryBasicBlock *EntryBlock = &(*this->begin());
+  dfsPostOrderTraversal(EntryBlock, PostDFSSet);
+
+  /*
+  while (!Loops.empty()) {
+    BinaryLoop *Loop = Loops.top();
+    Loops.pop();
+
+    dfsPostOrderTraversal(Loop->getHeader(), PostDFSSet);
+    errs()<<"\n";
+
+    // Add nested loops in the stack.
+    for (BinaryLoop::iterator I = Loop->begin(), E = Loop->end(); I != E; ++I) {
+      Loops.push(*I);
+    }
+
+    
+    // Index of a basic block in RPO traversal.
+    DenseMap<const BinaryBasicBlock *, unsigned> RPO;
+    unsigned Current = 0;
+    for (auto I = PostDFSSet.rbegin(), E = PostDFSSet.rend(); I != E; ++I)
+      RPO[*I] = Current++;
+
+    for (auto I = PostDFSSet.rbegin(), E = PostDFSSet.rend(); I != E; ++I) {
+      BinaryBasicBlock *BB = *I;
+      for (auto *Succ : BB->successors())
+        if (Loop->contains(Succ) && !LoopsInfo.isLoopHeader(Succ) && RPO[BB] > RPO[Succ])
+          // If an edge goes from a block with greater order number into a block
+          // with lesses number, and it is not a loop backedge, then it can only
+          // be a part of irreducible non-loop cycle.
+          return true;
+    }
+    
+  }*/
+
+  return false;
+}
+
 } // namespace bolt
 } // namespace llvm
+
