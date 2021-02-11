@@ -1,7 +1,31 @@
+#if !defined(__APPLE__)
+
 #include <cstddef>
 #include <cstdint>
 
+#else
+
+typedef __SIZE_TYPE__ size_t;
+#define __SSIZE_TYPE__                                                         \
+  __typeof__(_Generic((__SIZE_TYPE__)0, unsigned long long int                 \
+                      : (long long int)0, unsigned long int                    \
+                      : (long int)0, unsigned int                              \
+                      : (int)0, unsigned short                                 \
+                      : (short)0, unsigned char                                \
+                      : (signed char)0))
+typedef __SSIZE_TYPE__ ssize_t;
+
+typedef unsigned long long uint64_t;
+typedef unsigned uint32_t;
+typedef unsigned char uint8_t;
+
+typedef long long int64_t;
+typedef int int32_t;
+
+#endif
+
 #include "config.h"
+
 #ifdef HAVE_ELF_H
 #include <elf.h>
 #endif
@@ -47,11 +71,147 @@
 // Anonymous namespace covering everything but our library entry point
 namespace {
 
+constexpr uint32_t BufSize = 10240;
+
+#define _STRINGIFY(x) #x
+#define STRINGIFY(x) _STRINGIFY(x)
+
+
+uint64_t __write(uint64_t fd, const void *buf, uint64_t count) {
+  uint64_t ret;
+#if defined(__APPLE__)
+#define WRITE_SYSCALL 0x2000004
+#else
+#define WRITE_SYSCALL 1
+#endif
+  __asm__ __volatile__("movq $" STRINGIFY(WRITE_SYSCALL) ", %%rax\n"
+                       "syscall\n"
+                       : "=a"(ret)
+                       : "D"(fd), "S"(buf), "d"(count)
+                       : "cc", "rcx", "r11", "memory");
+  return ret;
+}
+
+
+void *__mmap(uint64_t addr, uint64_t size, uint64_t prot, uint64_t flags,
+             uint64_t fd, uint64_t offset) {
+#if defined(__APPLE__)
+#define MMAP_SYSCALL 0x20000c5
+#else
+#define MMAP_SYSCALL 9
+#endif
+  void *ret;
+  register uint64_t r8 asm("r8") = fd;
+  register uint64_t r9 asm("r9") = offset;
+  register uint64_t r10 asm("r10") = flags;
+  __asm__ __volatile__("movq $" STRINGIFY(MMAP_SYSCALL) ", %%rax\n"
+                       "syscall\n"
+                       : "=a"(ret)
+                       : "D"(addr), "S"(size), "d"(prot), "r"(r10), "r"(r8),
+                         "r"(r9)
+                       : "cc", "rcx", "r11", "memory");
+  return ret;
+}
+
+uint64_t __munmap(void *addr, uint64_t size) {
+#if defined(__APPLE__)
+#define MUNMAP_SYSCALL 0x2000049
+#else
+#define MUNMAP_SYSCALL 11
+#endif
+  uint64_t ret;
+  __asm__ __volatile__("movq $" STRINGIFY(MUNMAP_SYSCALL) ", %%rax\n"
+                       "syscall\n"
+                       : "=a"(ret)
+                       : "D"(addr), "S"(size)
+                       : "cc", "rcx", "r11", "memory");
+  return ret;
+}
+
+uint64_t __exit(uint64_t code) {
+#if defined(__APPLE__)
+#define EXIT_SYSCALL 0x2000001
+#else
+#define EXIT_SYSCALL 231
+#endif
+  uint64_t ret;
+  __asm__ __volatile__("movq $" STRINGIFY(EXIT_SYSCALL) ", %%rax\n"
+                       "syscall\n"
+                       : "=a"(ret)
+                       : "D"(code)
+                       : "cc", "rcx", "r11", "memory");
+  return ret;
+}
+
+// Helper functions for writing strings to the .fdata file. We intentionally
+// avoid using libc names (lowercase memset) to make it clear it is our impl.
+
+/// Write number Num using Base to the buffer in OutBuf, returns a pointer to
+/// the end of the string.
+char *intToStr(char *OutBuf, uint64_t Num, uint32_t Base) {
+  const char *Chars = "0123456789abcdef";
+  char Buf[21];
+  char *Ptr = Buf;
+  while (Num) {
+    *Ptr++ = *(Chars + (Num % Base));
+    Num /= Base;
+  }
+  if (Ptr == Buf) {
+    *OutBuf++ = '0';
+    return OutBuf;
+  }
+  while (Ptr != Buf) {
+    *OutBuf++ = *--Ptr;
+  }
+  return OutBuf;
+}
+
+/// Copy Str to OutBuf, returns a pointer to the end of the copied string
+char *strCopy(char *OutBuf, const char *Str, int32_t Size = BufSize) {
+  while (*Str) {
+    *OutBuf++ = *Str++;
+    if (--Size <= 0)
+      return OutBuf;
+  }
+  return OutBuf;
+}
+
+void memSet(char *Buf, char C, uint32_t Size) {
+  for (int I = 0; I < Size; ++I)
+    *Buf++ = C;
+}
+
+void *memCpy(void *Dest, const void *Src, size_t Len) {
+  char *d = static_cast<char *>(Dest);
+  const char *s = static_cast<const char *>(Src);
+  while (Len--)
+    *d++ = *s++;
+  return Dest;
+}
+
+uint32_t strLen(const char *Str) {
+  uint32_t Size = 0;
+  while (*Str++)
+    ++Size;
+  return Size;
+}
+
+void reportNumber(const char *Msg, uint64_t Num, uint32_t Base) {
+  char Buf[BufSize];
+  char *Ptr = Buf;
+  Ptr = strCopy(Ptr, Msg, BufSize - 23);
+  Ptr = intToStr(Ptr, Num, Base);
+  Ptr = strCopy(Ptr, "\n");
+  __write(2, Buf, Ptr - Buf);
+}
+
+void report(const char *Msg) { __write(2, Msg, strLen(Msg)); }
+
+#if !defined(__APPLE__)
 // We use a stack-allocated buffer for string manipulation in many pieces of
 // this code, including the code that prints each line of the fdata file. This
 // buffer needs to accomodate large function names, but shouldn't be arbitrarily
 // large (dynamically allocated) for simplicity of our memory space usage.
-constexpr uint32_t BufSize = 10240;
 
 // Declare some syscall wrappers we use throughout this code to avoid linking
 // against system libc.
@@ -61,16 +221,6 @@ uint64_t __open(const char *pathname, uint64_t flags, uint64_t mode) {
                        "syscall"
                        : "=a"(ret)
                        : "D"(pathname), "S"(flags), "d"(mode)
-                       : "cc", "rcx", "r11", "memory");
-  return ret;
-}
-
-uint64_t __write(uint64_t fd, const void *buf, uint64_t count) {
-  uint64_t ret;
-  __asm__ __volatile__("movq $1, %%rax\n"
-                       "syscall\n"
-                       : "=a"(ret)
-                       : "D"(fd), "S"(buf), "d"(count)
                        : "cc", "rcx", "r11", "memory");
   return ret;
 }
@@ -153,37 +303,12 @@ int64_t __fork() {
   return ret;
 }
 
-void *__mmap(uint64_t addr, uint64_t size, uint64_t prot, uint64_t flags,
-             uint64_t fd, uint64_t offset) {
-  void *ret;
-  register uint64_t r8 asm("r8") = fd;
-  register uint64_t r9 asm("r9") = offset;
-  register uint64_t r10 asm("r10") = flags;
-  __asm__ __volatile__("movq $9, %%rax\n"
-                       "syscall\n"
-                       : "=a"(ret)
-                       : "D"(addr), "S"(size), "d"(prot), "r"(r10), "r"(r8),
-                         "r"(r9)
-                       : "cc", "rcx", "r11", "memory");
-  return ret;
-}
-
 int __mprotect(void *addr, size_t len, int prot) {
   int ret;
   __asm__ __volatile__("movq $10, %%rax\n"
                        "syscall\n"
                        : "=a"(ret)
                        : "D"(addr), "S"(len), "d"(prot)
-                       : "cc", "rcx", "r11", "memory");
-  return ret;
-}
-
-uint64_t __munmap(void *addr, uint64_t size) {
-  uint64_t ret;
-  __asm__ __volatile__("movq $11, %%rax\n"
-                       "syscall\n"
-                       : "=a"(ret)
-                       : "D"(addr), "S"(size)
                        : "cc", "rcx", "r11", "memory");
   return ret;
 }
@@ -208,68 +333,7 @@ uint64_t __getppid() {
   return ret;
 }
 
-uint64_t __exit(uint64_t code) {
-  uint64_t ret;
-  __asm__ __volatile__("movq $231, %%rax\n"
-                       "syscall\n"
-                       : "=a"(ret)
-                       : "D"(code)
-                       : "cc", "rcx", "r11", "memory");
-  return ret;
-}
-
-// Helper functions for writing strings to the .fdata file. We intentionally
-// avoid using libc names (lowercase memset) to make it clear it is our impl.
-
-/// Write number Num using Base to the buffer in OutBuf, returns a pointer to
-/// the end of the string.
-char *intToStr(char *OutBuf, uint64_t Num, uint32_t Base) {
-  const char *Chars = "0123456789abcdef";
-  char Buf[21];
-  char *Ptr = Buf;
-  while (Num) {
-    *Ptr++ = *(Chars + (Num % Base));
-    Num /= Base;
-  }
-  if (Ptr == Buf) {
-    *OutBuf++ = '0';
-    return OutBuf;
-  }
-  while (Ptr != Buf) {
-    *OutBuf++ = *--Ptr;
-  }
-  return OutBuf;
-}
-
-/// Copy Str to OutBuf, returns a pointer to the end of the copied string
-char *strCopy(char *OutBuf, const char *Str, int32_t Size = BufSize) {
-  while (*Str) {
-    *OutBuf++ = *Str++;
-    if (--Size <= 0)
-      return OutBuf;
-  }
-  return OutBuf;
-}
-
-void memSet(char *Buf, char C, uint32_t Size) {
-  for (int I = 0; I < Size; ++I)
-    *Buf++ = C;
-}
-
-void *memCpy(void *Dest, const void *Src, size_t Len) {
-  char *d = static_cast<char *>(Dest);
-  const char *s = static_cast<const char *>(Src);
-  while (Len--)
-    *d++ = *s++;
-  return Dest;
-}
-
-uint32_t strLen(const char *Str) {
-  uint32_t Size = 0;
-  while (*Str++)
-    ++Size;
-  return Size;
-}
+#endif
 
 void reportError(const char *Msg, uint64_t Size) {
   __write(2, Msg, Size);
@@ -286,17 +350,6 @@ void assert(bool Assertion, const char *Msg) {
   Ptr = strCopy(Ptr, "\n");
   reportError(Buf, Ptr - Buf);
 }
-
-void reportNumber(const char *Msg, uint64_t Num, uint32_t Base) {
-  char Buf[BufSize];
-  char *Ptr = Buf;
-  Ptr = strCopy(Ptr, Msg, BufSize - 23);
-  Ptr = intToStr(Ptr, Num, Base);
-  Ptr = strCopy(Ptr, "\n");
-  __write(2, Buf, Ptr - Buf);
-}
-
-void report(const char *Msg) { __write(2, Msg, strLen(Msg)); }
 
 /// 1B mutex accessed by lock xchg
 class Mutex {
@@ -326,4 +379,5 @@ public:
 inline uint64_t alignTo(uint64_t Value, uint64_t Align) {
   return (Value + Align - 1) / Align * Align;
 }
+
 } // anonymous namespace

@@ -30,7 +30,7 @@ namespace bolt {
 
 /// Relocation class.
 struct Relocation {
-  static Triple::ArchType Arch; /// for printing, set by BinaryContext ctor.
+  static Triple::ArchType Arch; /// set by BinaryContext ctor.
 
   /// The offset of this relocation in the object it is contained in.
   uint64_t Offset;
@@ -57,7 +57,8 @@ struct Relocation {
 
   /// Extract current relocated value from binary contents. This is used for
   /// RISC architectures where values are encoded in specific bits depending
-  /// on the relocation value.
+  /// on the relocation value. For X86, we limit to sign extending the value
+  /// if necessary.
   static uint64_t extractValue(uint64_t Type, uint64_t Contents, uint64_t PC);
 
   /// Return true if relocation type is PC-relative. Return false otherwise.
@@ -71,6 +72,12 @@ struct Relocation {
 
   /// Return true if relocation type is for thread local storage.
   static bool isTLS(uint64_t Type);
+
+  /// Return code for a PC-relative 4-byte relocation
+  static uint64_t getPC32();
+
+  /// Return code for a PC-relative 8-byte relocation
+  static uint64_t getPC64();
 
   /// Return true if this relocation is PC-relative. Return false otherwise.
   bool isPCRelative() const {

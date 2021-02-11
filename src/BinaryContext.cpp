@@ -12,6 +12,7 @@
 #include "BinaryContext.h"
 #include "BinaryEmitter.h"
 #include "BinaryFunction.h"
+#include "NameResolver.h"
 #include "ParallelUtilities.h"
 #include "Utils.h"
 #include "llvm/ADT/Twine.h"
@@ -27,6 +28,7 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Regex.h"
 #include <functional>
 #include <iterator>
 
@@ -160,7 +162,7 @@ MCPlusBuilder *createMCPlusBuilder(const Triple::ArchType Arch,
 /// Create BinaryContext for a given architecture \p ArchName and
 /// triple \p TripleName.
 std::unique_ptr<BinaryContext>
-BinaryContext::createBinaryContext(ObjectFile *File,
+BinaryContext::createBinaryContext(ObjectFile *File, bool IsPIC,
                                    std::unique_ptr<DWARFContext> DwCtx) {
   StringRef ArchName = "";
   StringRef FeaturesStr = "";
@@ -180,7 +182,7 @@ BinaryContext::createBinaryContext(ObjectFile *File,
   }
 
   auto TheTriple = llvm::make_unique<Triple>(File->makeTriple());
-  const llvm::StringRef TripleName = TheTriple->str();
+  const std::string TripleName = TheTriple->str();
 
   std::string Error;
   const Target *TheTarget =
@@ -223,7 +225,7 @@ BinaryContext::createBinaryContext(ObjectFile *File,
       llvm::make_unique<MCObjectFileInfo>();
   std::unique_ptr<MCContext> Ctx =
       llvm::make_unique<MCContext>(AsmInfo.get(), MRI.get(), MOFI.get());
-  MOFI->InitMCObjectFileInfo(*TheTriple, /*PIC=*/false, *Ctx);
+  MOFI->InitMCObjectFileInfo(*TheTriple, IsPIC, *Ctx);
 
   std::unique_ptr<MCDisassembler> DisAsm(
       TheTarget->createMCDisassembler(*STI, *Ctx));
@@ -278,6 +280,8 @@ BinaryContext::createBinaryContext(ObjectFile *File,
       BC->TheTarget->createMCAsmBackend(*BC->STI, *BC->MRI, MCTargetOptions()));
 
   BC->setFilename(File->getFileName());
+
+  BC->HasFixedLoadAddress = !IsPIC;
 
   return BC;
 }
@@ -472,7 +476,7 @@ BinaryContext::handleAddressRef(uint64_t Address, BinaryFunction &BF,
 
   // TODO: use DWARF info to get size/alignment here?
   auto *TargetSymbol = getOrCreateGlobalSymbol(Address, "DATAat");
-  DEBUG(dbgs() << "Created symbol " << TargetSymbol->getName());
+  DEBUG(dbgs() << "Created symbol " << TargetSymbol->getName() << '\n');
   return std::make_pair(TargetSymbol, Addend);
 }
 
@@ -516,7 +520,7 @@ BinaryContext::analyzeMemoryAt(uint64_t Address, BinaryFunction &BF) {
 
 bool BinaryContext::analyzeJumpTable(const uint64_t Address,
                                      const JumpTable::JumpTableType Type,
-                                     const BinaryFunction &BF,
+                                     BinaryFunction &BF,
                                      const uint64_t NextJTAddress,
                                      JumpTable::OffsetsType *Offsets) {
   // Is one of the targets __builtin_unreachable?
@@ -525,9 +529,52 @@ bool BinaryContext::analyzeJumpTable(const uint64_t Address,
   // Number of targets other than __builtin_unreachable.
   uint64_t NumRealEntries{0};
 
+  constexpr uint64_t INVALID_OFFSET = std::numeric_limits<uint64_t>::max();
   auto addOffset = [&](uint64_t Offset) {
     if (Offsets)
       Offsets->emplace_back(Offset);
+  };
+
+  auto isFragment = [](BinaryFunction &Fragment,
+                       BinaryFunction &Parent) -> bool {
+    // Check if <fragment restored name> == <parent restored name>.cold(.\d+)?
+    for (auto BFName : Parent.getNames()) {
+      auto BFNamePrefix = Regex::escape(NameResolver::restore(BFName));
+      auto BFNameRegex = Twine(BFNamePrefix, "\\.cold(\\.[0-9]+)?").str();
+      if (Fragment.hasRestoredNameRegex(BFNameRegex))
+        return true;
+    }
+    return false;
+  };
+
+  auto doesBelongToFunction = [&](const uint64_t Addr,
+                                  BinaryFunction *TargetBF) -> bool {
+    if (BF.containsAddress(Addr))
+      return true;
+    // Nothing to do if we failed to identify the containing function.
+    if (!TargetBF)
+      return false;
+    // Case 1: check if BF is a fragment and TargetBF is its parent.
+    if (BF.isFragment()) {
+      // BF is a fragment, but parent function is not registered.
+      // This means there's no direct jump between parent and fragment.
+      // Set parent link here in jump table analysis, based on function name
+      // matching heuristic.
+      if (!BF.getParentFragment() && isFragment(BF, *TargetBF))
+        registerFragment(BF, *TargetBF);
+      return BF.getParentFragment() == TargetBF;
+    }
+    // Case 2: check if TargetBF is a fragment and BF is its parent.
+    if (TargetBF->isFragment()) {
+      // TargetBF is a fragment, but parent function is not registered.
+      // This means there's no direct jump between parent and fragment.
+      // Set parent link here in jump table analysis, based on function name
+      // matching heuristic.
+      if (!TargetBF->getParentFragment() && isFragment(*TargetBF, BF))
+        registerFragment(*TargetBF, BF);
+      return TargetBF->getParentFragment() == &BF;
+    }
+    return false;
   };
 
   auto Section = getSectionForAddress(Address);
@@ -547,15 +594,26 @@ bool BinaryContext::analyzeJumpTable(const uint64_t Address,
     UpperBound = std::min(NextJTAddress, UpperBound);
   }
 
+  DEBUG(dbgs() << "BOLT-DEBUG: analyzeJumpTable in " << BF.getPrintName()
+               << '\n');
   const auto EntrySize = getJumpTableEntrySize(Type);
   for (auto EntryAddress = Address; EntryAddress <= UpperBound - EntrySize;
        EntryAddress += EntrySize) {
+    DEBUG(dbgs() << "  * Checking 0x" << Twine::utohexstr(EntryAddress)
+                 << " -> ");
     // Check if there's a proper relocation against the jump table entry.
     if (HasRelocations) {
-      if (Type == JumpTable::JTT_PIC && !DataPCRelocations.count(EntryAddress))
+      if (Type == JumpTable::JTT_PIC &&
+          !DataPCRelocations.count(EntryAddress)) {
+        DEBUG(
+            dbgs() << "FAIL: JTT_PIC table, no relocation for this address\n");
         break;
-      if (Type == JumpTable::JTT_NORMAL && !getRelocationAt(EntryAddress))
+      }
+      if (Type == JumpTable::JTT_NORMAL && !getRelocationAt(EntryAddress)) {
+        DEBUG(dbgs()
+              << "FAIL: JTT_NORMAL table, no relocation for this address\n");
         break;
+      }
     }
 
     const uint64_t Value = (Type == JumpTable::JTT_PIC)
@@ -566,20 +624,55 @@ bool BinaryContext::analyzeJumpTable(const uint64_t Address,
     if (Value == BF.getAddress() + BF.getSize()) {
       addOffset(Value - BF.getAddress());
       HasUnreachable = true;
+      DEBUG(dbgs() << "OK: __builtin_unreachable\n");
       continue;
     }
 
+    // Function or one of its fragments.
+    auto TargetBF = getBinaryFunctionContainingAddress(Value);
+
     // We assume that a jump table cannot have function start as an entry.
-    if (!BF.containsAddress(Value) || Value == BF.getAddress())
+    if (!doesBelongToFunction(Value, TargetBF) || Value == BF.getAddress()) {
+      DEBUG({
+        if (!BF.containsAddress(Value)) {
+          dbgs() << "FAIL: function doesn't contain this address\n";
+          if (TargetBF) {
+            dbgs() << "  ! function containing this address: "
+                   << TargetBF->getPrintName() << '\n';
+            if (TargetBF->isFragment())
+              dbgs() << "  ! is a fragment\n";
+            auto TargetParent = TargetBF->getParentFragment();
+            dbgs() << "  ! its parent is "
+                   << (TargetParent ? TargetParent->getPrintName() : "(none)")
+                   << '\n';
+          }
+        }
+        if (Value == BF.getAddress())
+          dbgs() << "FAIL: jump table cannot have function start as an entry\n";
+      });
       break;
+    }
 
     // Check there's an instruction at this offset.
-    if (BF.getState() == BinaryFunction::State::Disassembled &&
-        !BF.getInstructionAtOffset(Value - BF.getAddress()))
+    if (TargetBF->getState() == BinaryFunction::State::Disassembled &&
+        !TargetBF->getInstructionAtOffset(Value - TargetBF->getAddress())) {
+      DEBUG(dbgs() << "FAIL: no instruction at this offset\n");
       break;
+    }
 
-    addOffset(Value - BF.getAddress());
     ++NumRealEntries;
+
+    if (TargetBF == &BF) {
+      // Address inside the function.
+      addOffset(Value - TargetBF->getAddress());
+      DEBUG(dbgs() << "OK: real entry\n");
+    } else {
+      // Address in split fragment.
+      BF.setHasSplitJumpTable(true);
+      // Add invalid offset for proper identification of jump table size.
+      addOffset(INVALID_OFFSET);
+      DEBUG(dbgs() << "OK: address in split fragment\n");
+    }
   }
 
   // It's a jump table if the number of real entries is more than 1, or there's
@@ -589,6 +682,8 @@ bool BinaryContext::analyzeJumpTable(const uint64_t Address,
 }
 
 void BinaryContext::populateJumpTables() {
+  std::vector<BinaryFunction *> FuncsToSkip;
+  DEBUG(dbgs() << "DataPCRelocations: " << DataPCRelocations.size() << '\n');
   for (auto JTI = JumpTables.begin(), JTE = JumpTables.end(); JTI != JTE;
        ++JTI) {
     auto *JT = JTI->second;
@@ -636,11 +731,31 @@ void BinaryContext::populateJumpTables() {
         DataPCRelocations.erase(DataPCRelocations.find(Address));
       }
     }
+
+    // Mark to skip the function and all its fragments.
+    if (BF.hasSplitJumpTable())
+      FuncsToSkip.push_back(&BF);
   }
 
-  assert((!opts::StrictMode || !DataPCRelocations.size()) &&
-         "unclaimed PC-relative relocations left in data\n");
+  if (opts::StrictMode && DataPCRelocations.size()) {
+    DEBUG({
+      dbgs() << DataPCRelocations.size()
+             << " unclaimed PC-relative relocations left in data:\n";
+      for (auto Reloc : DataPCRelocations)
+        dbgs() << Twine::utohexstr(Reloc) << '\n';
+    });
+    assert(0 && "unclaimed PC-relative relocations left in data\n");
+  }
   clearList(DataPCRelocations);
+  // Functions containing split jump tables need to be skipped with all
+  // fragments.
+  for (auto BF : FuncsToSkip) {
+    BinaryFunction *ParentBF =
+        const_cast<BinaryFunction *>(BF->getTopmostFragment());
+    DEBUG(dbgs() << "Skipping " << ParentBF->getPrintName() << " family\n");
+    ParentBF->setIgnored();
+    ParentBF->ignoreFragments();
+  }
 }
 
 MCSymbol *BinaryContext::getOrCreateGlobalSymbol(uint64_t Address,
@@ -699,7 +814,7 @@ BinaryContext::getOrCreateJumpTable(BinaryFunction &Function, uint64_t Address,
 
   DEBUG(dbgs() << "BOLT-DEBUG: creating jump table "
                << JTLabel->getName()
-               << " in function " << Function << 'n');
+               << " in function " << Function << '\n');
 
   auto *JT = new JumpTable(*JTLabel,
                            Address,
@@ -1016,68 +1131,77 @@ void BinaryContext::generateSymbolHashes() {
   }
 }
 
+void BinaryContext::registerFragment(BinaryFunction &TargetFunction,
+                                     BinaryFunction &Function) const {
+  // Only a parent function (or a sibling) can reach its fragment.
+  assert(!Function.IsFragment &&
+         "only one cold fragment is supported at this time");
+  if (auto *TargetParent = TargetFunction.getParentFragment()) {
+    assert(TargetParent == &Function && "mismatching parent function");
+    return;
+  }
+  TargetFunction.setParentFragment(Function);
+  Function.addFragment(TargetFunction);
+  if (!HasRelocations) {
+    TargetFunction.setSimple(false);
+    Function.setSimple(false);
+  }
+  if (opts::Verbosity >= 1) {
+    outs() << "BOLT-INFO: marking " << TargetFunction
+           << " as a fragment of " << Function << '\n';
+  }
+}
+
 void BinaryContext::processInterproceduralReferences(BinaryFunction &Function) {
   for (auto Address : Function.InterproceduralReferences) {
-    auto *ContainingFunction = getBinaryFunctionContainingAddress(Address);
-    if (&Function == ContainingFunction)
+    if (!Address)
       continue;
 
-    if (ContainingFunction) {
-      // Only a parent function (or a sibling) can reach its fragment.
-      if (ContainingFunction->IsFragment) {
-        assert(!Function.IsFragment &&
-               "only one cold fragment is supported at this time");
-        ContainingFunction->setParentFunction(&Function);
-        Function.addFragment(ContainingFunction);
-        if (!HasRelocations) {
-          ContainingFunction->setSimple(false);
-          Function.setSimple(false);
-        }
-        if (opts::Verbosity >= 1) {
-          outs() << "BOLT-INFO: marking " << *ContainingFunction
-                 << " as a fragment of " << Function << '\n';
-        }
-        continue;
-      }
+    auto *TargetFunction = getBinaryFunctionContainingAddress(Address);
+    if (&Function == TargetFunction)
+      continue;
 
-      if (ContainingFunction->getAddress() != Address) {
-        ContainingFunction->
-          addEntryPointAtOffset(Address - ContainingFunction->getAddress());
-      }
-    } else if (Address) {
-      // Check if address falls in function padding space - this could be
-      // unmarked data in code. In this case adjust the padding space size.
-      auto Section = getSectionForAddress(Address);
-      assert(Section && "cannot get section for referenced address");
+    if (TargetFunction) {
+      if (TargetFunction->IsFragment)
+        registerFragment(*TargetFunction, Function);
+      if (auto Offset = Address - TargetFunction->getAddress())
+        TargetFunction->addEntryPointAtOffset(Offset);
 
-      if (!Section->isText())
-        continue;
+      continue;
+    }
 
-      // PLT requires special handling and could be ignored in this context.
-      StringRef SectionName = Section->getName();
-      if (SectionName == ".plt" || SectionName == ".plt.got")
-        continue;
+    // Check if address falls in function padding space - this could be
+    // unmarked data in code. In this case adjust the padding space size.
+    auto Section = getSectionForAddress(Address);
+    assert(Section && "cannot get section for referenced address");
 
-      if (opts::UseOldText) {
-        errs() << "BOLT-ERROR: cannot process binaries with unmarked "
-               << "object in code at address 0x"
-               << Twine::utohexstr(Address) << " belonging to section "
-               << SectionName << " in relocation mode.\n";
-        exit(1);
-      }
+    if (!Section->isText())
+      continue;
 
-      ContainingFunction =
-        getBinaryFunctionContainingAddress(Address,
-                                           /*CheckPastEnd=*/false,
-                                           /*UseMaxSize=*/true);
-      // We are not going to overwrite non-simple functions, but for simple
-      // ones - adjust the padding size.
-      if (ContainingFunction && ContainingFunction->isSimple()) {
-        errs() << "BOLT-WARNING: function " << *ContainingFunction
-               << " has an object detected in a padding region at address 0x"
-               << Twine::utohexstr(Address) << '\n';
-        ContainingFunction->setMaxSize(ContainingFunction->getSize());
-      }
+    // PLT requires special handling and could be ignored in this context.
+    StringRef SectionName = Section->getName();
+    if (SectionName == ".plt" || SectionName == ".plt.got")
+      continue;
+
+    if (opts::processAllFunctions()) {
+      errs() << "BOLT-ERROR: cannot process binaries with unmarked "
+             << "object in code at address 0x"
+             << Twine::utohexstr(Address) << " belonging to section "
+             << SectionName << " in current mode\n";
+      exit(1);
+    }
+
+    TargetFunction =
+      getBinaryFunctionContainingAddress(Address,
+                                         /*CheckPastEnd=*/false,
+                                         /*UseMaxSize=*/true);
+    // We are not going to overwrite non-simple functions, but for simple
+    // ones - adjust the padding size.
+    if (TargetFunction && TargetFunction->isSimple()) {
+      errs() << "BOLT-WARNING: function " << *TargetFunction
+             << " has an object detected in a padding region at address 0x"
+             << Twine::utohexstr(Address) << '\n';
+      TargetFunction->setMaxSize(TargetFunction->getSize());
     }
   }
 
@@ -1257,40 +1381,6 @@ void BinaryContext::printGlobalSymbols(raw_ostream& OS) const {
   }
 }
 
-namespace {
-
-/// Recursively finds DWARF DW_TAG_subprogram DIEs and match them with
-/// BinaryFunctions.
-void findSubprograms(const DWARFDie DIE,
-                     std::map<uint64_t, BinaryFunction> &BinaryFunctions) {
-  if (DIE.isSubprogramDIE()) {
-    uint64_t LowPC, HighPC, SectionIndex;
-    if (DIE.getLowAndHighPC(LowPC, HighPC, SectionIndex)) {
-      auto It = BinaryFunctions.find(LowPC);
-      if (It != BinaryFunctions.end()) {
-          It->second.addSubprogramDIE(DIE);
-      } else {
-        // The function must have been optimized away by GC.
-      }
-    } else {
-      const auto RangesVector = DIE.getAddressRanges();
-      for (const auto Range : DIE.getAddressRanges()) {
-        auto It = BinaryFunctions.find(Range.LowPC);
-        if (It != BinaryFunctions.end()) {
-            It->second.addSubprogramDIE(DIE);
-        }
-      }
-    }
-  }
-
-  for (auto ChildDIE = DIE.getFirstChild(); ChildDIE && !ChildDIE.isNULL();
-       ChildDIE = ChildDIE.getSibling()) {
-    findSubprograms(ChildDIE, BinaryFunctions);
-  }
-}
-
-} // namespace
-
 unsigned BinaryContext::addDebugFilenameToUnit(const uint32_t DestCUID,
                                                const uint32_t SrcCUID,
                                                unsigned FileIndex) {
@@ -1335,11 +1425,61 @@ std::vector<BinaryFunction *> BinaryContext::getSortedFunctions() {
   return SortedFunctions;
 }
 
+std::vector<BinaryFunction *> BinaryContext::getAllBinaryFunctions() {
+  std::vector<BinaryFunction *> AllFunctions;
+  AllFunctions.reserve(BinaryFunctions.size() + InjectedBinaryFunctions.size());
+  std::transform(BinaryFunctions.begin(), BinaryFunctions.end(),
+                 std::back_inserter(AllFunctions),
+                 [](std::pair<const uint64_t, BinaryFunction> &BFI) {
+                   return &BFI.second;
+                 });
+  std::copy(InjectedBinaryFunctions.begin(), InjectedBinaryFunctions.end(),
+            std::back_inserter(AllFunctions));
+
+  return AllFunctions;
+}
+
 void BinaryContext::preprocessDebugInfo() {
-  // Populate MCContext with DWARF files.
+  struct CURange {
+    uint64_t LowPC;
+    uint64_t HighPC;
+    DWARFUnit *Unit;
+
+    bool operator<(const CURange &Other) const {
+      return LowPC < Other.LowPC;
+    }
+  };
+
+  // Building a map of address ranges to CUs similar to .debug_aranges and use
+  // it to assign CU to functions.
+  std::vector<CURange> AllRanges;
   for (const auto &CU : DwCtx->compile_units()) {
-    const auto CUID = CU->getOffset();
-    auto *LineTable = DwCtx->getLineTableForUnit(CU.get());
+    for (auto &Range : CU->getUnitDIE().getAddressRanges()) {
+      // Parts of the debug info could be invalidated due to corresponding code
+      // being removed from the binary by the linker. Hence we check if the
+      // address is a valid one.
+      if (containsAddress(Range.LowPC))
+        AllRanges.emplace_back(CURange{Range.LowPC, Range.HighPC, CU.get()});
+    }
+  }
+
+  std::sort(AllRanges.begin(), AllRanges.end());
+  for (auto &KV : BinaryFunctions) {
+    const uint64_t FunctionAddress = KV.first;
+    BinaryFunction &Function = KV.second;
+
+    auto It = std::partition_point(AllRanges.begin(), AllRanges.end(),
+        [=](CURange R) { return R.HighPC <= FunctionAddress; });
+    if (It != AllRanges.end() && It->LowPC <= FunctionAddress) {
+      Function.setDWARFUnit(It->Unit);
+    }
+  }
+
+  // Populate MCContext with DWARF files from all units.
+  for (const auto &CU : DwCtx->compile_units()) {
+    const uint32_t CUID = CU->getOffset();
+    const DWARFDebugLine::LineTable *LineTable =
+      DwCtx->getLineTableForUnit(CU.get());
     const auto &FileNames = LineTable->Prologue.FileNames;
     // Make sure empty debug line tables are registered too.
     if (FileNames.empty()) {
@@ -1361,99 +1501,6 @@ void BinaryContext::preprocessDebugInfo() {
       assert(FileName != "");
       cantFail(Ctx->getDwarfFile(Dir, FileName, 0, nullptr, None, CUID));
     }
-  }
-
-  // For each CU, iterate over its children DIEs and match subprogram DIEs to
-  // BinaryFunctions.
-
-  // Run findSubprograms on a range of compilation units
-  auto processBlock = [&](auto BlockBegin, auto BlockEnd) {
-    for (auto It = BlockBegin; It != BlockEnd; ++It) {
-      findSubprograms((*It)->getUnitDIE(false), BinaryFunctions);
-    }
-  };
-
-  if (opts::NoThreads) {
-    processBlock(DwCtx->compile_units().begin(), DwCtx->compile_units().end());
-  } else {
-    auto &ThreadPool = ParallelUtilities::getThreadPool();
-
-    // Divide compilation units uniformally into tasks.
-    unsigned BlockCost =
-        DwCtx->getNumCompileUnits() / (opts::TaskCount * opts::ThreadCount);
-    if (BlockCost == 0)
-      BlockCost = 1;
-
-    auto BlockBegin = DwCtx->compile_units().begin();
-    unsigned CurrentCost = 0;
-    for (auto It = DwCtx->compile_units().begin();
-         It != DwCtx->compile_units().end(); It++) {
-      CurrentCost++;
-      if (CurrentCost >= BlockCost) {
-        ThreadPool.async(processBlock, BlockBegin, std::next(It));
-        BlockBegin = std::next(It);
-        CurrentCost = 0;
-      }
-    }
-
-    ThreadPool.async(processBlock, BlockBegin, DwCtx->compile_units().end());
-    ThreadPool.wait();
-  }
-
-  for (auto &KV : BinaryFunctions) {
-    const auto FunctionAddress = KV.first;
-    auto &Function = KV.second;
-
-    // Sort associated CUs for deterministic update.
-    std::sort(Function.getSubprogramDIEs().begin(),
-              Function.getSubprogramDIEs().end(),
-              [](const DWARFDie &A, const DWARFDie &B) {
-                return A.getDwarfUnit()->getOffset() <
-                       B.getDwarfUnit()->getOffset();
-              });
-
-    // Some functions may not have a corresponding subprogram DIE
-    // yet they will be included in some CU and will have line number
-    // information. Hence we need to associate them with the CU and include
-    // in CU ranges.
-    if (Function.getSubprogramDIEs().empty()) {
-      if (auto DebugAranges = DwCtx->getDebugAranges()) {
-        auto CUOffset = DebugAranges->findAddress(FunctionAddress);
-        if (CUOffset != -1U) {
-          Function.addSubprogramDIE(
-              DWARFDie(DwCtx->getCompileUnitForOffset(CUOffset), nullptr));
-        }
-      }
-    }
-
-#ifdef DWARF_LOOKUP_ALL_RANGES
-    if (Function.getSubprogramDIEs().empty()) {
-      // Last resort - iterate over all compile units. This should not happen
-      // very often. If it does, we need to create a separate lookup table
-      // similar to .debug_aranges internally. This slows down processing
-      // considerably.
-      for (const auto &CU : DwCtx->compile_units()) {
-        const auto *CUDie = CU->getUnitDIE();
-        for (const auto &Range : CUDie->getAddressRanges(CU.get())) {
-          if (FunctionAddress >= Range.first &&
-              FunctionAddress < Range.second) {
-            Function.addSubprogramDIE(DWARFDie(CU.get(), nullptr));
-            break;
-          }
-        }
-      }
-    }
-#endif
-
-    // Set line table for function to the first CU with such table.
-    for (const auto &DIE : Function.getSubprogramDIEs()) {
-      if (const auto *LineTable =
-              DwCtx->getLineTableForUnit(DIE.getDwarfUnit())) {
-        Function.setDWARFUnitLineTable(DIE.getDwarfUnit(), LineTable);
-        break;
-      }
-    }
-
   }
 }
 
@@ -1571,7 +1618,7 @@ void BinaryContext::printInstruction(raw_ostream &OS,
   MIB->printAnnotations(Instruction, OS);
 
   const DWARFDebugLine::LineTable *LineTable =
-    Function && opts::PrintDebugInfo ? Function->getDWARFUnitLineTable().second
+    Function && opts::PrintDebugInfo ? Function->getDWARFLineTable()
                                      : nullptr;
 
   if (LineTable) {
@@ -1632,7 +1679,7 @@ BinarySection &BinaryContext::registerSection(BinarySection *Section) {
   assert(Res.second && "can't register the same section twice.");
 
   // Only register allocatable sections in the AddressToSection map.
-  if (Section->isAllocatable())
+  if (Section->isAllocatable() && Section->getAddress())
     AddressToSection.insert(std::make_pair(Section->getAddress(), Section));
   NameToSection.insert(std::make_pair(Section->getName(), Section));
   DEBUG(dbgs() << "BOLT-DEBUG: registering " << *Section << "\n");
@@ -1901,10 +1948,11 @@ BinaryContext::calculateEmittedSize(BinaryFunction &BF, bool FixBranches) {
   auto *Section = MCEInstance.LocalMOFI->getTextSection();
   Section->setHasInstructions(true);
 
-  auto *StartLabel = LocalCtx->getOrCreateSymbol("__hstart");
-  auto *EndLabel = LocalCtx->getOrCreateSymbol("__hend");
-  auto *ColdStartLabel = LocalCtx->getOrCreateSymbol("__cstart");
-  auto *ColdEndLabel = LocalCtx->getOrCreateSymbol("__cend");
+  // Create symbols in the LocalCtx so that they get destroyed with it.
+  MCSymbol *StartLabel = LocalCtx->createTempSymbol();
+  MCSymbol *EndLabel = LocalCtx->createTempSymbol();
+  MCSymbol *ColdStartLabel = LocalCtx->createTempSymbol();
+  MCSymbol *ColdEndLabel = LocalCtx->createTempSymbol();
 
   Streamer->SwitchSection(Section);
   Streamer->EmitLabel(StartLabel);
@@ -1982,8 +2030,7 @@ uint64_t BinaryContext::getHotThreshold() const {
 BinaryFunction *
 BinaryContext::getBinaryFunctionContainingAddress(uint64_t Address,
                                                   bool CheckPastEnd,
-                                                  bool UseMaxSize,
-                                                  bool Shallow) {
+                                                  bool UseMaxSize) {
   auto FI = BinaryFunctions.upper_bound(Address);
   if (FI == BinaryFunctions.begin())
     return nullptr;
@@ -1995,28 +2042,17 @@ BinaryContext::getBinaryFunctionContainingAddress(uint64_t Address,
   if (Address >= FI->first + UsedSize + (CheckPastEnd ? 1 : 0))
     return nullptr;
 
-  auto *BF = &FI->second;
-  if (Shallow)
-    return BF;
-
-  while (BF->getParentFunction())
-    BF = BF->getParentFunction();
-
-  return BF;
+  return &FI->second;
 }
 
 BinaryFunction *
-BinaryContext::getBinaryFunctionAtAddress(uint64_t Address, bool Shallow) {
+BinaryContext::getBinaryFunctionAtAddress(uint64_t Address) {
   // First, try to find a function starting at the given address. If the
   // function was folded, this will get us the original folded function if it
   // wasn't removed from the list, e.g. in non-relocation mode.
   auto BFI = BinaryFunctions.find(Address);
   if (BFI != BinaryFunctions.end()) {
-    auto *BF = &BFI->second;
-    while (!Shallow && BF->getParentFunction() && !Shallow) {
-      BF = BF->getParentFunction();
-    }
-    return BF;
+    return &BFI->second;
   }
 
   // We might have folded the function matching the object at the given
@@ -2026,12 +2062,8 @@ BinaryContext::getBinaryFunctionAtAddress(uint64_t Address, bool Shallow) {
   if (const auto *BD = getBinaryDataAtAddress(Address)) {
     uint64_t EntryID{0};
     auto *BF = getFunctionForSymbol(BD->getSymbol(), &EntryID);
-    if (BF && EntryID == 0) {
-      while (BF->getParentFunction() && !Shallow) {
-        BF = BF->getParentFunction();
-      }
+    if (BF && EntryID == 0)
       return BF;
-    }
   }
   return nullptr;
 }

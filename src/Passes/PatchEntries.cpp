@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PatchEntries.h"
+#include "NameResolver.h"
 #include "llvm/Support/Options.h"
 
 namespace opts {
@@ -20,7 +21,7 @@ extern llvm::cl::OptionCategory BoltCategory;
 
 extern llvm::cl::opt<unsigned> Verbosity;
 
-static llvm::cl::opt<bool>
+llvm::cl::opt<bool>
 ForcePatch("force-patch",
   llvm::cl::desc("force patching of original entry points"),
   llvm::cl::init(false),
@@ -34,9 +35,6 @@ namespace llvm {
 namespace bolt {
 
 void PatchEntries::runOnFunctions(BinaryContext &BC) {
-  if (!BC.HasRelocations)
-    return;
-
   if (!opts::ForcePatch) {
     // Mark the binary for patching if we did not create external references
     // for original code in any of functions we are not going to emit.
@@ -57,24 +55,32 @@ void PatchEntries::runOnFunctions(BinaryContext &BC) {
     outs() << "BOLT-INFO: patching entries in original code\n";
   }
 
-  static auto Emitter = BC.createIndependentMCCodeEmitter();
+  // Calculate the size of the patch.
+  static size_t PatchSize = 0;
+  if (!PatchSize) {
+    MCInst TailCallInst;
+    BC.MIB->createTailCall(TailCallInst, BC.Ctx->createTempSymbol(),
+                           BC.Ctx.get());
+    PatchSize = BC.computeInstructionSize(TailCallInst);
+  }
 
   for (auto &BFI : BC.getBinaryFunctions()) {
     auto &Function = BFI.second;
 
-    // Patch original code only for functions that are emitted.
+    // Patch original code only for functions that will be emitted.
     if (!BC.shouldEmit(Function))
       continue;
 
     // Check if we can skip patching the function.
-    if (!Function.hasEHRanges() && Function.getSize() < PatchThreshold) {
+    if (!opts::ForcePatch && !Function.hasEHRanges() &&
+        Function.getSize() < PatchThreshold) {
       continue;
     }
 
     // List of patches for function entries. We either successfully patch
-    // all entries or, if we cannot patch any, do no patch the rest and
+    // all entries or, if we cannot patch one or more, do no patch any and
     // mark the function as ignorable.
-    std::vector<InstructionPatch> PendingPatches;
+    std::vector<Patch> PendingPatches;
 
     uint64_t NextValidByte = 0; // offset of the byte past the last patch
     bool Success = Function.forEachEntryPoint([&](uint64_t Offset,
@@ -87,20 +93,10 @@ void PatchEntries::runOnFunctions(BinaryContext &BC) {
         return false;
       }
 
-      MCInst TailCallInst;
-      BC.MIB->createTailCall(TailCallInst, Symbol, BC.Ctx.get());
-
-      PendingPatches.push_back(InstructionPatch());
-      InstructionPatch &InstPatch = PendingPatches.back();
-      InstPatch.Offset =
-        Function.getAddress() - Function.getSection().getAddress() + Offset;
-
-      SmallVector<MCFixup, 4> Fixups;
-      raw_svector_ostream VecOS(InstPatch.Code);
-
-      Emitter.MCE->encodeInstruction(TailCallInst, VecOS, Fixups, *BC.STI);
-
-      NextValidByte = Offset + InstPatch.Code.size();
+      PendingPatches.emplace_back(Patch{Symbol, Function.getAddress() + Offset,
+                                        Function.getFileOffset() + Offset,
+                                        Function.getOriginSection()});
+      NextValidByte = Offset + PatchSize;
       if (NextValidByte > Function.getMaxSize()) {
         if (opts::Verbosity >= 1) {
           outs() << "BOLT-INFO: function " << Function << " too small to patch "
@@ -108,13 +104,6 @@ void PatchEntries::runOnFunctions(BinaryContext &BC) {
         }
         return false;
       }
-
-      assert(Fixups.size() == 1 && "unexpected fixup size");
-      Optional<Relocation> Rel = BC.MIB->createRelocation(Fixups[0], *BC.MAB);
-      assert(Rel && "unable to convert fixup to relocation");
-
-      InstPatch.Rel = *Rel;
-      InstPatch.Rel.Offset += InstPatch.Offset;
 
       return true;
     });
@@ -128,11 +117,26 @@ void PatchEntries::runOnFunctions(BinaryContext &BC) {
       continue;
     }
 
-    // Apply all recorded patches.
     for (auto &Patch : PendingPatches) {
-      Function.getSection().addPatch(Patch.Offset, Patch.Code);
-      Function.getSection().addPendingRelocation(Patch.Rel);
+      BinaryFunction *PatchFunction =
+          BC.createInjectedBinaryFunction(
+              NameResolver::append(Patch.Symbol->getName(), ".org.0"));
+      // Force the function to be emitted at the given address.
+      PatchFunction->setOutputAddress(Patch.Address);
+      PatchFunction->setFileOffset(Patch.FileOffset);
+      PatchFunction->setOriginSection(Patch.Section);
+
+      MCInst TailCallInst;
+      BC.MIB->createTailCall(TailCallInst, Patch.Symbol, BC.Ctx.get());
+      PatchFunction->addBasicBlock(0)->addInstruction(TailCallInst);
+
+      // Verify the size requirements.
+      uint64_t HotSize, ColdSize;
+      std::tie(HotSize, ColdSize) = BC.calculateEmittedSize(*PatchFunction);
+      assert(!ColdSize && "unexpected cold code");
+      assert(HotSize <= PatchSize && "max patch size exceeded");
     }
+
     Function.setIsPatched(true);
   }
 }

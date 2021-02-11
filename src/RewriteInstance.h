@@ -107,6 +107,30 @@ private:
   /// Process input relocations.
   void processRelocations();
 
+  /// Insert an LKMarker for a given code pointer \p PC from a non-code section
+  /// \p SectionName.
+  void insertLKMarker(uint64_t PC, uint64_t SectionOffset,
+                      int32_t PCRelativeOffset, bool IsPCRelative,
+                      StringRef SectionName);
+
+  /// Process linux kernel special sections and their relocations.
+  void processLKSections();
+
+  /// Process special linux kernel section, __ex_table.
+  void processLKExTable();
+
+  /// Process special linux kernel section, .pci_fixup.
+  void processLKPCIFixup();
+
+  /// Process __ksymtab and __ksymtab_gpl.
+  void processLKKSymtab(bool IsGPL = false);
+
+  /// Process special linux kernel section, __bug_table.
+  void processLKBugTable();
+
+  /// Process special linux kernel section, .smp_locks.
+  void processLKSMPLocks();
+
   /// Read relocations from a given section.
   void readDynamicRelocations(const object::SectionRef &Section);
 
@@ -270,7 +294,7 @@ private:
 
   /// Write ELF symbol table using \p Write and \p AddToStrTab functions
   /// based on the input file symbol table passed in \p SymTabSection.
-  /// \p PatchExisting is set to true for dynamic symbol table since we
+  /// \p IsDynSym is set to true for dynamic symbol table since we
   /// are updating it in-place with minimal modifications.
   template <typename ELFT,
             typename ELFShdrTy = typename ELFObjectFile<ELFT>::Elf_Shdr,
@@ -278,7 +302,7 @@ private:
             typename StrTabFuncTy>
   void updateELFSymbolTable(
       ELFObjectFile<ELFT> *File,
-      bool PatchExisting,
+      bool IsDynSym,
       const ELFShdrTy &SymTabSection,
       const std::vector<uint32_t> &NewSectionIndex,
       WriteFuncTy Write,

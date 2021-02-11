@@ -14,6 +14,7 @@
 #include "BinaryFunction.h"
 #include "DynoStats.h"
 #include "MCPlusBuilder.h"
+#include "NameResolver.h"
 #include "NameShortener.h"
 #include "llvm/ADT/edit_distance.h"
 #include "llvm/ADT/SmallSet.h"
@@ -104,6 +105,15 @@ JumpTables("jump-tables",
   cl::ZeroOrMore,
   cl::cat(BoltOptCategory));
 
+static cl::opt<bool>
+NoScan("no-scan",
+  cl::desc("do not scan cold functions for external references (may result in "
+           "slower binary)"),
+  cl::init(false),
+  cl::ZeroOrMore,
+  cl::Hidden,
+  cl::cat(BoltOptCategory));
+
 cl::opt<bool>
 PreserveBlocksAlignment("preserve-blocks-alignment",
   cl::desc("try to preserve basic block alignment"),
@@ -182,9 +192,8 @@ bool emptyRange(const R &Range) {
 /// to point to this information, which is represented by a
 /// DebugLineTableRowRef. The returned pointer is null if no debug line
 /// information for this instruction was found.
-SMLoc findDebugLineInformationForInstructionAt(
-    uint64_t Address,
-    DWARFUnitLineTable &ULT) {
+SMLoc findDebugLineInformationForInstructionAt(uint64_t Address,
+    DWARFUnit *Unit, const DWARFDebugLine::LineTable *LineTable) {
   // We use the pointer in SMLoc to store an instance of DebugLineTableRowRef,
   // which occupies 64 bits. Thus, we can only proceed if the struct fits into
   // the pointer itself.
@@ -193,11 +202,6 @@ SMLoc findDebugLineInformationForInstructionAt(
       "Cannot fit instruction debug line information into SMLoc's pointer");
 
   SMLoc NullResult = DebugLineTableRowRef::NULL_ROW.toSMLoc();
-
-  auto &LineTable = ULT.second;
-  if (!LineTable)
-    return NullResult;
-
   uint32_t RowIndex = LineTable->lookupAddress(Address);
   if (RowIndex == LineTable->UnknownRowIndex)
     return NullResult;
@@ -209,7 +213,7 @@ SMLoc findDebugLineInformationForInstructionAt(
   DebugLineTableRowRef *InstructionLocation =
     reinterpret_cast<DebugLineTableRowRef *>(&Ptr);
 
-  InstructionLocation->DwCompileUnitIndex = ULT.first->getOffset();
+  InstructionLocation->DwCompileUnitIndex = Unit->getOffset();
   InstructionLocation->RowIndex = RowIndex + 1;
 
   return SMLoc::getFromPointer(Ptr);
@@ -249,9 +253,19 @@ BinaryFunction::hasNameRegex(const StringRef Name) const {
   return Match;
 }
 
+Optional<StringRef>
+BinaryFunction::hasRestoredNameRegex(const StringRef Name) const {
+  const auto RegexName = (Twine("^") + StringRef(Name) + "$").str();
+  Regex MatchName(RegexName);
+  auto Match = forEachName([&MatchName](StringRef Name) {
+      return MatchName.match(NameResolver::restore(Name));
+  });
+
+  return Match;
+}
+
 std::string BinaryFunction::getDemangledName() const {
-  StringRef MangledName = getOneName();
-  MangledName = MangledName.substr(0, MangledName.find_first_of('/'));
+  StringRef MangledName = NameResolver::restore(getOneName());
   int Status = 0;
   char *const Name =
       abi::__cxa_demangle(MangledName.str().c_str(), 0, 0, &Status);
@@ -400,7 +414,7 @@ void BinaryFunction::print(raw_ostream &OS, std::string Annotation,
     return;
 
   StringRef SectionName =
-      IsInjected ? "<no input section>" : InputSection->getName();
+      OriginSection ? OriginSection->getName() : "<no origin section>";
   OS << "Binary Function \"" << *this << "\" " << Annotation << " {";
   auto AllNames = getNames();
   if (AllNames.size() > 1) {
@@ -440,8 +454,8 @@ void BinaryFunction::print(raw_ostream &OS, std::string Annotation,
   if (isFolded()) {
     OS << "\n  FoldedInto  : " << *getFoldedIntoFunction();
   }
-  if (ParentFunction) {
-    OS << "\n  Parent      : " << *ParentFunction;
+  if (ParentFragment) {
+    OS << "\n  Parent      : " << *ParentFragment;
   }
   if (!Fragments.empty()) {
     OS << "\n  Fragments   : ";
@@ -915,7 +929,7 @@ MCSymbol *BinaryFunction::getOrCreateLocalLabel(uint64_t Address,
 }
 
 ErrorOr<ArrayRef<uint8_t>> BinaryFunction::getData() const {
-  auto &Section = getSection();
+  BinarySection &Section = *getOriginSection();
   assert(Section.containsRange(getAddress(), getMaxSize()) &&
          "wrong section for function");
 
@@ -971,8 +985,6 @@ bool BinaryFunction::disassemble() {
 
   auto &Ctx = BC.Ctx;
   auto &MIB = BC.MIB;
-
-  DWARFUnitLineTable ULT = getDWARFUnitLineTable();
 
   // Insert a label at the beginning of the function. This will be our first
   // basic block.
@@ -1359,9 +1371,11 @@ bool BinaryFunction::disassemble() {
     }
 
 add_instruction:
-    if (ULT.first && ULT.second) {
+    if (getDWARFLineTable()) {
       Instruction.setLoc(
-          findDebugLineInformationForInstructionAt(AbsoluteInstrAddr, ULT));
+          findDebugLineInformationForInstructionAt(AbsoluteInstrAddr,
+                                                   getDWARFUnit(),
+                                                   getDWARFLineTable()));
     }
 
     // Record offset of the instruction for profile matching.
@@ -1391,6 +1405,13 @@ bool BinaryFunction::scanExternalRefs() {
   // Ignore pseudo functions.
   if (isPseudo())
     return Success;
+
+  if (opts::NoScan) {
+    clearList(Relocations);
+    clearList(ExternallyReferencedOffsets);
+
+    return false;
+  }
 
   // List of external references for this function.
   std::vector<Relocation> FunctionRelocations;
@@ -1556,7 +1577,7 @@ bool BinaryFunction::scanExternalRefs() {
         Success = false;
         continue;
       }
-      Rel->Offset +=  getAddress() - getSection().getAddress() + Offset;
+      Rel->Offset +=  getAddress() - getOriginSection()->getAddress() + Offset;
       FunctionRelocations.push_back(*Rel);
     }
 
@@ -1567,7 +1588,7 @@ bool BinaryFunction::scanExternalRefs() {
   // Add relocations unless disassembly failed for this function.
   if (!DisassemblyFailed) {
     for (auto &Rel : FunctionRelocations) {
-      getSection().addPendingRelocation(Rel);
+      getOriginSection()->addPendingRelocation(Rel);
     }
   }
 
@@ -1633,6 +1654,7 @@ void BinaryFunction::postProcessEntryPoints() {
       setIgnored();
     }
     setSimple(false);
+    return;
   }
 }
 
@@ -2925,6 +2947,7 @@ void BinaryFunction::setIgnored() {
 
   IsIgnored = true;
   IsSimple = false;
+  DEBUG(dbgs() << "Ignoring " << getPrintName() << '\n');
 }
 
 void BinaryFunction::duplicateConstantIslands() {
@@ -3944,7 +3967,7 @@ bool BinaryFunction::isSymbolValidInScope(const SymbolRef &Symbol,
                                           uint64_t SymbolSize) const {
   // If this symbol is in a different section from the one where the
   // function symbol is, don't consider it as valid.
-  if (!getSection().containsAddress(
+  if (!getOriginSection()->containsAddress(
           cantFail(Symbol.getAddress(), "cannot get symbol address")))
     return false;
 
@@ -4159,6 +4182,9 @@ void BinaryFunction::updateOutputValues(const MCAsmLayout &Layout) {
 DebugAddressRangesVector BinaryFunction::getOutputAddressRanges() const {
   DebugAddressRangesVector OutputRanges;
 
+  if (isFolded())
+    return OutputRanges;
+
   if (IsFragment)
     return OutputRanges;
 
@@ -4184,6 +4210,9 @@ DebugAddressRangesVector BinaryFunction::getOutputAddressRanges() const {
 }
 
 uint64_t BinaryFunction::translateInputToOutputAddress(uint64_t Address) const {
+  if (isFolded())
+    return 0;
+
   // If the function hasn't changed return the same address.
   if (!isEmitted())
     return Address;
@@ -4217,6 +4246,9 @@ uint64_t BinaryFunction::translateInputToOutputAddress(uint64_t Address) const {
 DebugAddressRangesVector BinaryFunction::translateInputToOutputRanges(
     const DWARFAddressRangesVector &InputRanges) const {
   DebugAddressRangesVector OutputRanges;
+
+  if (isFolded())
+    return OutputRanges;
 
   // If the function hasn't changed return the same ranges.
   if (!isEmitted()) {
@@ -4322,6 +4354,12 @@ MCInst *BinaryFunction::getInstructionAtOffset(uint64_t Offset) {
 
 DWARFDebugLoc::LocationList BinaryFunction::translateInputToOutputLocationList(
     DWARFDebugLoc::LocationList InputLL) const {
+  DWARFDebugLoc::LocationList OutputLL;
+
+  if (isFolded()) {
+    return OutputLL;
+  }
+
   // If the function hasn't changed - there's nothing to update.
   if (!isEmitted()) {
     return InputLL;
@@ -4329,7 +4367,6 @@ DWARFDebugLoc::LocationList BinaryFunction::translateInputToOutputLocationList(
 
   uint64_t PrevEndAddress = 0;
   SmallVectorImpl<char> *PrevLoc = nullptr;
-  DWARFDebugLoc::LocationList OutputLL;
   for (const auto &Entry : InputLL.Entries) {
     const auto Start = Entry.Begin;
     const auto End = Entry.End;

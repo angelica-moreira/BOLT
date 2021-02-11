@@ -14,7 +14,11 @@
 #include "BinaryEmitter.h"
 #include "BinaryFunction.h"
 #include "BinaryPassManager.h"
+#include "DataReader.h"
 #include "ExecutableFileMemoryManager.h"
+#include "JumpTable.h"
+#include "Passes/Instrumentation.h"
+#include "Passes/PatchEntries.h"
 #include "Utils.h"
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
 #include "llvm/MC/MCAsmBackend.h"
@@ -28,6 +32,11 @@ namespace opts {
 
 using namespace llvm;
 extern cl::opt<unsigned> AlignText;
+extern cl::opt<bool> CheckOverlappingElements;
+extern cl::opt<bool> ForcePatch;
+extern cl::opt<bool> Instrument;
+extern cl::opt<bool> InstrumentCalls;
+extern cl::opt<bolt::JumpTableSupportLevel> JumpTables;
 extern cl::opt<bool> KeepTmp;
 extern cl::opt<bool> NeverPrint;
 extern cl::opt<std::string> OutputFilename;
@@ -37,6 +46,7 @@ extern cl::opt<bool> PrintReordered;
 extern cl::opt<bool> PrintSections;
 extern cl::opt<bool> PrintDisasm;
 extern cl::opt<bool> PrintCFG;
+extern cl::opt<std::string> RuntimeInstrumentationLib;
 extern cl::opt<unsigned> Verbosity;
 } // namespace opts
 
@@ -46,12 +56,50 @@ namespace bolt {
 #undef DEBUG_TYPE
 #define DEBUG_TYPE "bolt"
 
-MachORewriteInstance::MachORewriteInstance(object::MachOObjectFile *InputFile)
-    : InputFile(InputFile),
+MachORewriteInstance::MachORewriteInstance(object::MachOObjectFile *InputFile,
+                                           StringRef ToolPath)
+    : InputFile(InputFile), ToolPath(ToolPath),
       BC(BinaryContext::createBinaryContext(
-          InputFile, DWARFContext::create(*InputFile, nullptr,
-                                          DWARFContext::defaultErrorHandler, "",
-                                          false))) {}
+          InputFile, /* IsPIC */ true,
+          DWARFContext::create(*InputFile, nullptr,
+                               DWARFContext::defaultErrorHandler, "",
+                               false))) {}
+
+Error MachORewriteInstance::setProfile(StringRef Filename) {
+  if (!sys::fs::exists(Filename))
+    return errorCodeToError(make_error_code(errc::no_such_file_or_directory));
+
+  if (ProfileReader) {
+    // Already exists
+    return make_error<StringError>(
+        Twine("multiple profiles specified: ") + ProfileReader->getFilename() +
+        " and " + Filename, inconvertibleErrorCode());
+  }
+
+  ProfileReader = llvm::make_unique<DataReader>(Filename);
+  return Error::success();
+}
+
+void MachORewriteInstance::preprocessProfileData() {
+  if (!ProfileReader)
+    return;
+  if (auto E = ProfileReader->preprocessProfile(*BC.get()))
+    report_error("cannot pre-process profile", std::move(E));
+}
+
+void MachORewriteInstance::processProfileDataPreCFG() {
+  if (!ProfileReader)
+    return;
+  if (auto E = ProfileReader->readProfilePreCFG(*BC.get()))
+    report_error("cannot read profile pre-CFG", std::move(E));
+}
+
+void MachORewriteInstance::processProfileData() {
+  if (!ProfileReader)
+    return;
+  if (auto E = ProfileReader->readProfile(*BC.get()))
+    report_error("cannot read profile", std::move(E));
+}
 
 void MachORewriteInstance::readSpecialSections() {
   for (const auto &Section : InputFile->sections()) {
@@ -103,6 +151,41 @@ std::vector<DataInCodeRegion> readDataInCode(const MachOObjectFile &O) {
   return DataInCode;
 }
 
+Optional<uint64_t> readStartAddress(const MachOObjectFile &O) {
+  Optional<uint64_t> StartOffset;
+  Optional<uint64_t> TextVMAddr;
+  for (const auto &LC : O.load_commands()) {
+    switch (LC.C.cmd) {
+    case MachO::LC_MAIN: {
+      MachO::entry_point_command LCMain = O.getEntryPointCommand(LC);
+      StartOffset = LCMain.entryoff;
+      break;
+    }
+    case MachO::LC_SEGMENT: {
+      MachO::segment_command LCSeg = O.getSegmentLoadCommand(LC);
+      StringRef SegmentName(LCSeg.segname,
+                            strnlen(LCSeg.segname, sizeof(LCSeg.segname)));
+      if (SegmentName == "__TEXT")
+        TextVMAddr = LCSeg.vmaddr;
+      break;
+    }
+    case MachO::LC_SEGMENT_64: {
+      MachO::segment_command_64 LCSeg = O.getSegment64LoadCommand(LC);
+      StringRef SegmentName(LCSeg.segname,
+                            strnlen(LCSeg.segname, sizeof(LCSeg.segname)));
+      if (SegmentName == "__TEXT")
+        TextVMAddr = LCSeg.vmaddr;
+      break;
+    }
+    default:
+      continue;
+    }
+  }
+  return (TextVMAddr && StartOffset)
+             ? Optional<uint64_t>(*TextVMAddr + *StartOffset)
+             : llvm::None;
+}
+
 } // anonymous namespace
 
 void MachORewriteInstance::discoverFileObjects() {
@@ -150,11 +233,15 @@ void MachORewriteInstance::discoverFileObjects() {
 
     const uint64_t SymbolSize = EndAddress - Address;
     const auto It = BC->getBinaryFunctions().find(Address);
-    if (It == BC->getBinaryFunctions().end())
-      BC->createBinaryFunction(std::move(SymbolName), *Section, Address,
-                               SymbolSize);
-    else
+    if (It == BC->getBinaryFunctions().end()) {
+      BinaryFunction *Function = BC->createBinaryFunction(
+          std::move(SymbolName), *Section, Address, SymbolSize);
+      if (!opts::Instrument)
+        Function->setOutputAddress(Function->getAddress());
+
+    } else {
       It->second.addAlternativeName(std::move(SymbolName));
+    }
   }
 
   const std::vector<DataInCodeRegion> DataInCode = readDataInCode(*InputFile);
@@ -190,6 +277,8 @@ void MachORewriteInstance::discoverFileObjects() {
             Function.getFileOffset() + Function.getMaxSize())
       Function.setSimple(false);
   }
+
+  BC->StartFunctionAddress = readStartAddress(*InputFile);
 }
 
 void MachORewriteInstance::disassembleFunctions() {
@@ -200,6 +289,14 @@ void MachORewriteInstance::disassembleFunctions() {
     Function.disassemble();
     if (opts::PrintDisasm)
       Function.print(outs(), "after disassembly", true);
+  }
+}
+
+void MachORewriteInstance::buildFunctionsCFG() {
+  for (auto &BFI : BC->getBinaryFunctions()) {
+    BinaryFunction &Function = BFI.second;
+    if (!Function.isSimple())
+      continue;
     if (!Function.buildCFG(/*AllocId*/ 0)) {
       errs() << "BOLT-WARNING: failed to build CFG for the function "
              << Function << "\n";
@@ -220,6 +317,10 @@ void MachORewriteInstance::postProcessFunctions() {
 
 void MachORewriteInstance::runOptimizationPasses() {
   BinaryFunctionPassManager Manager(*BC);
+  if (opts::Instrument) {
+    Manager.registerPass(llvm::make_unique<PatchEntries>());
+    Manager.registerPass(llvm::make_unique<Instrumentation>(opts::NeverPrint));
+  }
   Manager.registerPass(
       llvm::make_unique<ReorderBasicBlocks>(opts::PrintReordered));
   Manager.registerPass(
@@ -231,23 +332,66 @@ void MachORewriteInstance::runOptimizationPasses() {
   Manager.runPasses();
 }
 
-void MachORewriteInstance::mapCodeSections(orc::VModuleKey Key) {
-  for (auto &BFI : BC->getBinaryFunctions()) {
-    BinaryFunction &Function = BFI.second;
-    if (!Function.isSimple())
-      continue;
-    assert(Function.isEmitted() && "Simple function has not been emitted");
-    ErrorOr<BinarySection &> FuncSection = Function.getCodeSection();
-    assert(FuncSection && "cannot find section for function");
+void MachORewriteInstance::mapInstrumentationSection(orc::VModuleKey Key, StringRef SectionName) {
+  if (!opts::Instrument)
+    return;
+  ErrorOr<BinarySection &> Section = BC->getUniqueSectionByName(SectionName);
+  if (!Section) {
+    llvm::errs() << "Cannot find " + SectionName + " section\n";
+    exit(1);
+  }
+  if (!Section->hasValidSectionID())
+    return;
+  OLT->mapSectionAddress(Key, Section->getSectionID(), Section->getAddress());
+}
 
-    FuncSection->setOutputAddress(Function.getAddress());
+void MachORewriteInstance::mapCodeSections(orc::VModuleKey Key) {
+  for (BinaryFunction *Function : BC->getAllBinaryFunctions()) {
+    if (!Function->isEmitted())
+      continue;
+    if (Function->getOutputAddress() == 0)
+      continue;
+    ErrorOr<BinarySection &> FuncSection = Function->getCodeSection();
+    if (!FuncSection)
+      report_error(
+          (Twine("Cannot find section for function ") + Function->getOneName())
+              .str(),
+          FuncSection.getError());
+
+    FuncSection->setOutputAddress(Function->getOutputAddress());
     DEBUG(dbgs() << "BOLT: mapping 0x"
                  << Twine::utohexstr(FuncSection->getAllocAddress()) << " to 0x"
-                 << Twine::utohexstr(Function.getAddress()) << '\n');
+                 << Twine::utohexstr(Function->getOutputAddress()) << '\n');
     OLT->mapSectionAddress(Key, FuncSection->getSectionID(),
-                           Function.getAddress());
-    Function.setImageAddress(FuncSection->getAllocAddress());
-    Function.setImageSize(FuncSection->getOutputSize());
+                           Function->getOutputAddress());
+    Function->setImageAddress(FuncSection->getAllocAddress());
+    Function->setImageSize(FuncSection->getOutputSize());
+  }
+
+  if (opts::Instrument) {
+    ErrorOr<BinarySection &> BOLT = BC->getUniqueSectionByName("__bolt");
+    if (!BOLT) {
+      llvm::errs() << "Cannot find __bolt section\n";
+      exit(1);
+    }
+    uint64_t Addr = BOLT->getAddress();
+    for (BinaryFunction *Function : BC->getAllBinaryFunctions()) {
+      if (!Function->isEmitted())
+        continue;
+      if (Function->getOutputAddress() != 0)
+        continue;
+      ErrorOr<BinarySection &> FuncSection = Function->getCodeSection();
+      assert(FuncSection && "cannot find section for function");
+      Addr = llvm::alignTo(Addr, 4);
+      FuncSection->setOutputAddress(Addr);
+      OLT->mapSectionAddress(Key, FuncSection->getSectionID(), Addr);
+      Function->setFileOffset(Addr - BOLT->getAddress() +
+                              BOLT->getInputFileOffset());
+      Function->setImageAddress(FuncSection->getAllocAddress());
+      Function->setImageSize(FuncSection->getOutputSize());
+      BC->registerNameAtAddress(Function->getOneName(), Addr, 0, 0);
+      Addr += FuncSection->getOutputSize();
+    }
   }
 }
 
@@ -288,8 +432,6 @@ void MachORewriteInstance::emitAndLink() {
   auto Resolver = orc::createLegacyLookupResolver(
       [&](const std::string &Name) -> JITSymbol {
         llvm::errs() << "looking for " << Name << "\n";
-        assert(!BC->EFMM->ObjectsLoaded &&
-               "Linking multiple objects is unsupported");
         DEBUG(dbgs() << "BOLT: looking for " << Name << "\n");
         if (auto *I = BC->getBinaryDataByName(Name)) {
           const uint64_t Address = I->isMoved() && !I->isJumpTable()
@@ -324,16 +466,50 @@ void MachORewriteInstance::emitAndLink() {
       },
       [&](orc::VModuleKey Key, const object::ObjectFile &Obj,
           const RuntimeDyld::LoadedObjectInfo &) {
-        assert(Key == K && "Linking multiple objects is unsupported");
-        mapCodeSections(Key);
+        if (Key == K) {
+          mapCodeSections(Key);
+          mapInstrumentationSection(Key, "__counters");
+          mapInstrumentationSection(Key, "__tables");
+        } else {
+          // TODO: Refactor addRuntimeLibSections to work properly on Mach-O
+          // and use it here.
+          mapInstrumentationSection(Key, "I__setup");
+          mapInstrumentationSection(Key, "I__fini");
+          mapInstrumentationSection(Key, "I__data");
+          mapInstrumentationSection(Key, "I__text");
+          mapInstrumentationSection(Key, "I__cstring");
+          mapInstrumentationSection(Key, "I__literal16");
+        }
       },
       [&](orc::VModuleKey Key) {
-        assert(Key == K && "Linking multiple objects is unsupported");
       }));
 
   OLT->setProcessAllSections(true);
   cantFail(OLT->addObject(K, std::move(ObjectMemBuffer)));
   cantFail(OLT->emitAndFinalize(K));
+
+  if (auto *RtLibrary = BC->getRuntimeLibrary()) {
+    RtLibrary->link(*BC, ToolPath, *ES, *OLT);
+  }
+}
+
+void MachORewriteInstance::writeInstrumentationSection(StringRef SectionName,
+                                                       raw_pwrite_stream &OS) {
+  if (!opts::Instrument)
+    return;
+  ErrorOr<BinarySection &> Section = BC->getUniqueSectionByName(SectionName);
+  if (!Section) {
+    llvm::errs() << "Cannot find " + SectionName + " section\n";
+    exit(1);
+  }
+  if (!Section->hasValidSectionID())
+    return;
+  assert(Section->getInputFileOffset() &&
+         "Section input offset cannot be zero");
+  assert(Section->getAllocAddress() && "Section alloc address cannot be zero");
+  assert(Section->getOutputSize() && "Section output size cannot be zero");
+  OS.pwrite(reinterpret_cast<char *>(Section->getAllocAddress()),
+            Section->getOutputSize(), Section->getInputFileOffset());
 }
 
 void MachORewriteInstance::rewriteFile() {
@@ -350,29 +526,68 @@ void MachORewriteInstance::rewriteFile() {
     if (!Function.isSimple())
       continue;
     assert(Function.isEmitted() && "Simple function has not been emitted");
-    if (Function.getImageSize() > Function.getMaxSize())
+    if (!opts::Instrument && (Function.getImageSize() > Function.getMaxSize()))
       continue;
     if (opts::Verbosity >= 2)
       outs() << "BOLT: rewriting function \"" << Function << "\"\n";
     OS.pwrite(reinterpret_cast<char *>(Function.getImageAddress()),
               Function.getImageSize(), Function.getFileOffset());
   }
+
+  for (const BinaryFunction *Function : BC->getInjectedBinaryFunctions()) {
+    OS.pwrite(reinterpret_cast<char *>(Function->getImageAddress()),
+              Function->getImageSize(), Function->getFileOffset());
+  }
+
+  writeInstrumentationSection("__counters", OS);
+  writeInstrumentationSection("__tables", OS);
+
+  // TODO: Refactor addRuntimeLibSections to work properly on Mach-O and
+  // use it here.
+  writeInstrumentationSection("I__setup", OS);
+  writeInstrumentationSection("I__fini", OS);
+  writeInstrumentationSection("I__data", OS);
+  writeInstrumentationSection("I__text", OS);
+  writeInstrumentationSection("I__cstring", OS);
+  writeInstrumentationSection("I__literal16", OS);
+
   Out->keep();
 }
 
 void MachORewriteInstance::adjustCommandLineOptions() {
+  opts::CheckOverlappingElements = false;
   if (!opts::AlignText.getNumOccurrences())
     opts::AlignText = BC->PageAlign;
+  if (opts::Instrument.getNumOccurrences())
+    opts::ForcePatch = true;
+  opts::JumpTables = JTS_MOVE;
+  opts::InstrumentCalls = false;
+  opts::RuntimeInstrumentationLib = "libbolt_rt_instr_osx.a";
 }
 
 void MachORewriteInstance::run() {
   adjustCommandLineOptions();
+
   readSpecialSections();
+
   discoverFileObjects();
+
+  preprocessProfileData();
+
   disassembleFunctions();
+
+  processProfileDataPreCFG();
+
+  buildFunctionsCFG();
+
+  processProfileData();
+
   postProcessFunctions();
+
   runOptimizationPasses();
+
   emitAndLink();
+
   rewriteFile();
 }
 

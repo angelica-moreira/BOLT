@@ -93,6 +93,7 @@ private:
 
   /// Extract annotation value from immediate operand value.
   static int64_t extractAnnotationValue(int64_t ImmValue) {
+    ImmValue &= 0xffffffffffffff;
     return (ImmValue << 8) >> 8;
   }
 
@@ -1735,6 +1736,26 @@ public:
   virtual std::vector<MCInst> createInstrumentedNoopIndTailCallHandler() const {
     llvm_unreachable("not implemented");
     return std::vector<MCInst>();
+  }
+
+  virtual std::vector<MCInst> createNumCountersGetter(MCContext *Ctx) const {
+    llvm_unreachable("not implemented");
+    return {};
+  }
+
+  virtual std::vector<MCInst> createInstrLocationsGetter(MCContext *Ctx) const {
+    llvm_unreachable("not implemented");
+    return {};
+  }
+
+  virtual std::vector<MCInst> createInstrTablesGetter(MCContext *Ctx) const {
+    llvm_unreachable("not implemented");
+    return {};
+  }
+
+  virtual std::vector<MCInst> createInstrNumFuncsGetter(MCContext *Ctx) const {
+    llvm_unreachable("not implemented");
+    return {};
   }
 
   /// This method takes an indirect call instruction and splits it up into an
