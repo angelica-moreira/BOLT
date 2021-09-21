@@ -35,10 +35,16 @@ encounter any issues.
 
 ## Installation
 
-### Docker Image
+### Docker Image For Original BOLT 
 
 You can build and use the docker image containing BOLT using our [docker file](./utils/docker/Dockerfile).
 Alternatively, you can build BOLT manually using the steps below.
+
+### Docker Image For BOLT+VESPA
+
+You can acces the docker image containing the artifact of the paper VESPA: Static Profiling for Binary Optimization at 
+[docker hub] (https://zenodo.org/record/5502310#.YUo5Li1h1QK). If you have any doubts on how to run the scrips that 
+reproduce the research questions please read the file published at [zenodo] (https://zenodo.org/record/5502310#.YUo5Li1h1QK).
 
 ### Manual Build
 
@@ -52,7 +58,7 @@ Start with cloning LLVM and BOLT repos:
 > git clone https://github.com/llvm-mirror/llvm llvm
 > cd llvm/tools
 > git checkout -b llvm-bolt f137ed238db11440f03083b1c88b7ffc0f4af65e
-> git clone https://github.com/facebookincubator/BOLT llvm-bolt
+> git clone https://github.com/angelica-moreira/BOLT.git llvm-bolt 
 > cd ..
 > patch -p 1 < tools/llvm-bolt/llvm.patch
 ```
