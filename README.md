@@ -50,8 +50,8 @@ Alternatively, you can build BOLT manually using the steps below.
 ### Docker Image For BOLT+VESPA
 
 You can acces the docker image containing the artifact of the paper VESPA: Static Profiling for Binary Optimization at 
-[docker hub] (https://zenodo.org/record/5502310#.YUo5Li1h1QK). If you have any doubts on how to run the scrips that 
-reproduce the research questions please read the file published at [zenodo] (https://zenodo.org/record/5502310#.YUo5Li1h1QK).
+[docker hub](https://zenodo.org/record/5502310#.YUo5Li1h1QK). If you have any doubts on how to run the scrips that 
+reproduce the research questions please read the file published at [zenodo](https://zenodo.org/record/5502310#.YUo5Li1h1QK).
 
 ### Manual Build
 
@@ -103,7 +103,7 @@ Or if you rather use tcmalloc:
 > LD_PRELOAD=/usr/lib64/libtcmalloc_minimal.so llvm-bolt ....
 ```
 
-## Usage
+## Standard BOLT Usage
 
 For a complete practical guide of using BOLT see [Optimizing Clang with BOLT](./docs/OptimizingClang.md).
 
@@ -229,6 +229,10 @@ $ merge-fdata *.fdata > combined.fdata
 ```
 Use `combined.fdata` for **Step 3** above to generate a universally optimized
 binary.
+
+## BOLT+VESPA Usage
+
+### Step 0
 
 ## License
 
