@@ -247,13 +247,15 @@ See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
 ## BOLT+ Others Static Predictors Usage
 
 We incorporated in BOLT some trivial static predictor and the [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw)
-heuristics. If you want to run them just start by following the steps 0 and 1 explained 
-in the section [BOLT+VESPA Usage](https://github.com/angelica-moreira/BOLT#boltvespa-usage) 
-and then follow the step below.  
+heuristics.  
 
-### Step 2: Optimize with BOLT
+### Step 0
+
+See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
+
+### Step 1: Optimize with BOLT
 
 
 ## License
 
-BOLT is licensed under [University of Illinois/NCSA Open Source License](./LICENSE.TXT).
+BOLT and BOLT+VESPA are licensed under [University of Illinois/NCSA Open Source License](./LICENSE.TXT).
