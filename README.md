@@ -326,14 +326,14 @@ See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-based=wularus  \
-                         -reorder-blocks=cache+  -split-functions=3 -split-all-cold \
+                         -reorder-blocks=cache+ -split-functions=3 -split-all-cold \
                          -dyno-stats -icf=1 -use-gnu-stack
 ```
 
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -heuristic-based=wularus \
-                         -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats \
+                         -reorder-blocks=cache+ -split-functions=3 -split-all-cold -dyno-stats \
                          -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
 ```
 
