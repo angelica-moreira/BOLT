@@ -238,6 +238,8 @@ See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
 
 ### Step 1: Extract Code Features
 
+To generate the csv feature file (```features.csv```) you must do as follows:
+
 ```
 $ llvm-bolt <executable> -gen-features
 ```
@@ -252,9 +254,8 @@ desired directory ($VIRTUAL_ENV_DIR) as follows:
 $ python3 -m venv ${VIRTUAL_ENV_DIR}/vespa-env
 ```
 
-Now actiate it and install the dependences needed for running
-the scrpits of directory ```${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts``` 
-(the ```$LLVM_BOLT_DIRECTORY``` variable represents ```llvm-bolt``` source directory).
+Now activate it and install the dependences needed for running
+the scrpits of directory ```${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts```.
 The dependency files is at ```${LLVM_BOLT_DIRECTORY}/utils/requirements.txt```,
 make sure to not forget to upgrate pip before installing the dependences, as
 follows:
@@ -264,6 +265,11 @@ $ source ${VIRTUAL_ENV_DIR}/vespa-env/bin/activate
 $ ${VIRTUAL_ENV_DIR}/vespa-env/bin/pip install --upgrade pip
 $ ${VIRTUAL_ENV_DIR}/vespa-env/bin/pip install -r ${LLVM_BOLT_DIRECTORY}/utils/requirements.txt
 ```
+
+You can skip the installation if you had already done it before, but make sure to activate it
+every time you want to run the scripts ```preprocessing.py``` and ```generate_probfiles.py```.
+
+Note: The ```$LLVM_BOLT_DIRECTORY``` variable represents ```llvm-bolt``` source directory.
 
 ### Step 3: Optimize with BOLT + VESPA
 
