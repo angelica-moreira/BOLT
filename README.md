@@ -262,8 +262,9 @@ follows:
 
 ```
 $ source ${VIRTUAL_ENV_DIR}/vespa-env/bin/activate
-$ ${VIRTUAL_ENV_DIR}/vespa-env/bin/pip install --upgrade pip
-$ ${VIRTUAL_ENV_DIR}/vespa-env/bin/pip install -r ${LLVM_BOLT_DIRECTORY}/utils/requirements.txt
+$ PYTHON_HOME=${VIRTUAL_ENV_DIR}/vespa-env/bin
+$ ${PYTHON_HOME}/pip install --upgrade pip
+$ ${PYTHON_HOME}/pip install -r ${LLVM_BOLT_DIRECTORY}/utils/requirements.txt
 ```
 
 You can skip the installation if you had already done it before, but make sure to activate it
@@ -275,12 +276,13 @@ be used to guide BOLT optimizations, do as follows:
 ```
 $ VESPA_SCRIPTS_HOME=${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts/
 $ source ${VIRTUAL_ENV_DIR}/vespa-env/bin/activate
-$ (vespa-env) $ ${VIRTUAL_ENV_DIR}/vespa-env/bin/python3 ${VESPA_SCRIPTS_HOME}/preprocessing.py <folder_path> <stage_code> <result_path>
-$ (vespa-env) $ ${VIRTUAL_ENV_DIR}/vespa-env/bin/python3 ${VESPA_SCRIPTS_HOME}/python3 ./vespa_scripts/generate_probfiles.py <model_path> <data_base_path> <output_path> [bin_name]
+$ PYTHON_HOME=${VIRTUAL_ENV_DIR}/vespa-env/bin
+$ (vespa-env) $ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/preprocessing.py <folder_path> <stage_code> <result_path>
+$ (vespa-env) $ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/python3 ./vespa_scripts/generate_probfiles.py <model_path> <data_base_path> <output_path> [bin_name]
 $ deactivate
 ```
 
-Note: The ```$LLVM_BOLT_DIRECTORY``` variable represents ```llvm-bolt``` source directory 
+Note: The ```LLVM_BOLT_DIRECTORY``` variable represents ```llvm-bolt``` source directory 
 the ```${HOME}/llvm/tools/llvm-bolt/```.
 
 ### Step 3: Optimize with BOLT + VESPA
@@ -298,7 +300,10 @@ flag ``` -infer-global-counts ``` instead of ``` -infer-local-counts ```
 when executing ```llvm-bolt```:
 
 ```
-$ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based -prob-file=prob.pdata  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
+$ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based \
+                         -prob-file=prob.pdata  -reorder-blocks=cache+ \
+                         -split-functions=3 -split-all-cold -dyno-stats -icf=1 \
+                         -reorder-functions=hfsort -split-eh -use-gnu-stack
 ```
 
 ## BOLT + Other Static Predictors Usage
@@ -316,12 +321,16 @@ See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
 
 
 ```
-$ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-based=wularus  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -use-gnu-stack
+$ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-based=wularus  \
+$                        -reorder-blocks=cache+  -split-functions=3 -split-all-cold \
+$                        -dyno-stats -icf=1 -use-gnu-stack
 ```
 
 
 ```
-$ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -heuristic-based=wularus  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
+$ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -heuristic-based=wularus \
+                         -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats \
+                         -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
 ```
 
 For testing the trivial predictions please run BOLT with the -help option and check the 
