@@ -244,8 +244,25 @@ $ llvm-bolt <executable> -gen-features
 
 ### Step 2: Generate Inferred Profile
 
-> predict
-> generate prob file
+Before you go ahead make sure that you have python3 installed
+in your machine and then create a virtual enviroment in your
+desired directory ($VIRTUAL_ENV_DIR) as follows:
+
+```
+$ python3 -m venv ${VIRTUAL_ENV_DIR}/vespa-env
+```
+
+Now actiate it and install the dependences needed for running
+the scrpits of directory ```${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts```.
+The dependency files is at ```${LLVM_BOLT_DIRECTORY}/utils/requirements.txt```,
+make sure to not forget to upgrate pip before intalling the dependences, as
+follows:
+
+```
+$ source ${VIRTUAL_ENV_DIR}/vespa-env/bin/activate
+$ ${VIRTUAL_ENV_DIR}/vespa-env/bin/pip install --upgrade pip
+$ ${VIRTUAL_ENV_DIR}/vespa-env/bin/pip install -r ${LLVM_BOLT_DIRECTORY}/utils/requirements.txt
+```
 
 ### Step 3: Optimize with BOLT + VESPA
 
