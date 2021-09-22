@@ -269,7 +269,19 @@ $ ${VIRTUAL_ENV_DIR}/vespa-env/bin/pip install -r ${LLVM_BOLT_DIRECTORY}/utils/r
 You can skip the installation if you had already done it before, but make sure to activate it
 every time you want to run the scripts ```preprocessing.py``` and ```generate_probfiles.py```.
 
-Note: The ```$LLVM_BOLT_DIRECTORY``` variable represents ```llvm-bolt``` source directory.
+To generate the probabilities file that will have the prediction performed by VESPA and that will
+be used to guide BOLT optimizations, do as follows:
+
+```
+$ VESPA_SCRIPTS_HOME=${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts/
+$ source ${VIRTUAL_ENV_DIR}/vespa-env/bin/activate
+$ (vespa-env) $ ${VIRTUAL_ENV_DIR}/vespa-env/bin/python3 ${VESPA_SCRIPTS_HOME}/preprocessing.py [folder_path] [stage_code] [result_path]
+$ (vespa-env) $ ${VIRTUAL_ENV_DIR}/vespa-env/bin/python3 ${VESPA_SCRIPTS_HOME}/python3 ./vespa_scripts/generate_probfiles.py [model_path] [data_base_path] [output_path] [bin_name]
+$ deactivate
+```
+
+Note: The ```$LLVM_BOLT_DIRECTORY``` variable represents ```llvm-bolt``` source directory 
+the ```${HOME}/llvm/tools/llvm-bolt/```.
 
 ### Step 3: Optimize with BOLT + VESPA
 
