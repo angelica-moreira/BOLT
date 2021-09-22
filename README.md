@@ -250,7 +250,7 @@ $ llvm-bolt <executable> -gen-features
 ### Step 3: Optimize with BOLT + VESPA
 
 Once you have prob.pdata ready, you can use it for optimizations with BOLT. 
-Assuming your environment is setup to include the right path, execute llvm-bolt:
+Assuming your environment is setup to include the right path, execute ```llvm-bolt```:
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -ml-based -prob-file=prob.pdata  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -use-gnu-stack
@@ -259,7 +259,7 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -ml-based -pro
 Be aware that the command above do not work well for functions' rearegement
 if you intend to perform this optimization it is advisable that you use the 
 flag ``` -infer-global-counts ``` instead of ``` -infer-local-counts ```
-when executing llvm-bolt:
+when executing ```llvm-bolt```:
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based -prob-file=prob.pdata  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
@@ -286,6 +286,10 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-bas
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -heuristic-based=wularus  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
 ```
+
+For testing the trivial predictions please run BOLT with the -help option and 
+check the category "BOLT static infered profile options" for a quick reference on 
+trivial heuristics and its description.
 
 ## License
 
