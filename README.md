@@ -236,13 +236,34 @@ binary.
 
 See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
 
-### Step 1: Extract the Code Features
+### Step 1: Extract Code Features
 
-### Step 2: Generate the Inferred Profile
+```
+$ llvm-bolt <executable> -gen-features
+```
 
-### Step 3: Convert Inferred Profile to BOLT Format
+### Step 2: Generate Inferred Profile
 
-### Step 4: Optimize with BOLT
+> predict
+> generate prob file
+
+### Step 3: Optimize with BOLT+VESPA
+
+Once you have prob.pdata ready, you can use it for optimizations with BOLT. 
+Assuming your environment is setup to include the right path, execute llvm-bolt:
+
+```
+$ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -ml-based -prob-file=prob.pdata  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -use-gnu-stack
+```
+
+Be aware that the command above do not work well for functions' rearegement
+if you intend to perform this optimization it is advisable that you use the 
+flag ``` -infer-global-counts ``` instead of ``` -infer-local-counts ```
+when executing llvm-bolt:
+
+```
+$ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based -prob-file=prob.pdata  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
+```
 
 ## BOLT+ Others Static Predictors Usage
 
@@ -253,7 +274,7 @@ heuristics.
 
 See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
 
-### Step 1: Optimize with BOLT
+### Step 1: Optimize with BOLT+Other Static Predictors
 
 
 ## License
