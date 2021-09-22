@@ -253,9 +253,10 @@ $ python3 -m venv ${VIRTUAL_ENV_DIR}/vespa-env
 ```
 
 Now actiate it and install the dependences needed for running
-the scrpits of directory ```${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts```.
+the scrpits of directory ```${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts``` 
+(the ```$LLVM_BOLT_DIRECTORY``` variable represents ```llvm-bolt``` source directory).
 The dependency files is at ```${LLVM_BOLT_DIRECTORY}/utils/requirements.txt```,
-make sure to not forget to upgrate pip before intalling the dependences, as
+make sure to not forget to upgrate pip before installing the dependences, as
 follows:
 
 ```
