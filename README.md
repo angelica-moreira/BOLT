@@ -230,7 +230,7 @@ $ merge-fdata *.fdata > combined.fdata
 Use `combined.fdata` for **Step 3** above to generate a universally optimized
 binary.
 
-## BOLT+VESPA Usage
+## BOLT + VESPA Usage
 
 ### Step 0
 
@@ -247,7 +247,7 @@ $ llvm-bolt <executable> -gen-features
 > predict
 > generate prob file
 
-### Step 3: Optimize with BOLT+VESPA
+### Step 3: Optimize with BOLT + VESPA
 
 Once you have prob.pdata ready, you can use it for optimizations with BOLT. 
 Assuming your environment is setup to include the right path, execute llvm-bolt:
@@ -265,7 +265,7 @@ when executing llvm-bolt:
 $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based -prob-file=prob.pdata  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
 ```
 
-## BOLT+ Others Static Predictors Usage
+## BOLT + Other Static Predictors Usage
 
 We incorporated in BOLT some trivial static predictor and the [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw)
 heuristics.  
@@ -276,6 +276,16 @@ See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
 
 ### Step 1: Optimize with BOLT+Other Static Predictors
 
+
+
+```
+$ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-based=wularus  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -use-gnu-stack
+```
+
+
+```
+$ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -heuristic-based=wularus  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
+```
 
 ## License
 
