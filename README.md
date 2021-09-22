@@ -201,7 +201,8 @@ Once you have `perf.fdata` ready, you can use it for optimizations with
 BOLT. Assuming your environment is setup to include the right path, execute
 `llvm-bolt`:
 ```
-$ llvm-bolt <executable> -o <executable>.bolt -data=perf.fdata -reorder-blocks=cache+ -reorder-functions=hfsort -split-functions=2 -split-all-cold -split-eh -dyno-stats
+$ llvm-bolt <executable> -o <executable>.bolt -data=perf.fdata -reorder-blocks=cache+ \
+                         -reorder-functions=hfsort -split-functions=2 -split-all-cold -split-eh -dyno-stats
 ```
 
 If you do need an updated debug info, then add `-update-debug-sections` option
@@ -293,7 +294,7 @@ Assuming your environment is setup to include the right path, execute ```llvm-bo
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -ml-based -prob-file=prob.pdata \
-                         -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats \
+                         -reorder-blocks=cache+ -split-functions=3 -split-all-cold -dyno-stats \
                          -icf=1 -use-gnu-stack
 ```
 
@@ -304,7 +305,7 @@ when executing ```llvm-bolt```:
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based \
-                         -prob-file=prob.pdata  -reorder-blocks=cache+ \
+                         -prob-file=prob.pdata -reorder-blocks=cache+ \
                          -split-functions=3 -split-all-cold -dyno-stats -icf=1 \
                          -reorder-functions=hfsort -split-eh -use-gnu-stack
 ```
