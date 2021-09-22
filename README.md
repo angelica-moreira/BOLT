@@ -235,11 +235,11 @@ binary.
 
 ### Step 0
 
-See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
+See [Step 0](https://github.com/angelica-moreira/BOLT#step-0) from **Standard BOLT Usage** section.
 
 ### Step 1: Extract Code Features
 
-To generate the csv feature file (```features.csv```) you must do as follows:
+To generate the csv feature file (`features.csv`) you must do as follows:
 
 ```
 $ llvm-bolt <executable> -gen-features
@@ -249,15 +249,15 @@ $ llvm-bolt <executable> -gen-features
 
 Before you go ahead make sure that you have python3 installed
 in your machine and then create a virtual enviroment in your
-desired directory ($VIRTUAL_ENV_DIR) as follows:
+desired directory (`$VIRTUAL_ENV_DIR`) as follows:
 
 ```
 $ python3 -m venv ${VIRTUAL_ENV_DIR}/vespa-env
 ```
 
 Now activate it and install the dependences needed for running
-the scrpits of directory ```${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts```.
-The dependency files is at ```${LLVM_BOLT_DIRECTORY}/utils/requirements.txt```,
+the scrpits of directory `${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts`.
+The dependency files is at `${LLVM_BOLT_DIRECTORY}/utils/requirements.txt`,
 make sure to not forget to upgrate pip before installing the dependences, as
 follows:
 
@@ -269,7 +269,7 @@ $ ${PYTHON_HOME}/pip install -r ${LLVM_BOLT_DIRECTORY}/utils/requirements.txt
 ```
 
 You can skip the installation if you had already done it before, but make sure to activate it
-every time you want to run the scripts ```preprocessing.py``` and ```generate_probfiles.py```.
+every time you want to run the scripts `preprocessing.py` and `generate_probfiles.py`.
 
 To generate the probabilities file that will have the prediction performed by VESPA and that will
 be used to guide BOLT optimizations, do as follows:
@@ -284,13 +284,13 @@ $ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/python3 ./vespa_scripts/generate_
 $ deactivate
 ```
 
-Note: The ```LLVM_BOLT_DIRECTORY``` variable represents ```llvm-bolt``` source directory 
-the ```${HOME}/llvm/tools/llvm-bolt/```.
+Note: The `LLVM_BOLT_DIRECTORY` variable represents `llvm-bolt` source directory 
+the `${HOME}/llvm/tools/llvm-bolt/`.
 
 ### Step 3: Optimize with BOLT + VESPA
 
 Once you have prob.pdata ready, you can use it for optimizations with BOLT. 
-Assuming your environment is setup to include the right path, execute ```llvm-bolt```:
+Assuming your environment is setup to include the right path, execute `llvm-bolt`:
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -ml-based -prob-file=prob.pdata \
@@ -300,8 +300,8 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -ml-based -pro
 
 Be aware that the command above do not work well for functions' rearegement
 if you intend to perform this optimization it is advisable that you use the 
-flag ``` -infer-global-counts ``` instead of ``` -infer-local-counts ```
-when executing ```llvm-bolt```:
+flag `-infer-global-counts` instead of `-infer-local-counts`
+when executing `llvm-bolt`:
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based \
@@ -318,7 +318,7 @@ heuristic-based profiler.
 
 ### Step 0
 
-See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
+See [Step 0](https://github.com/angelica-moreira/BOLT#step-0) from **Standard BOLT Usage** section.
 
 ### Step 1: Optimize with BOLT+Other Static Predictors
 
@@ -349,7 +349,7 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -heuristic-ba
 
 For testing the trivial predictions please run BOLT with the -help option and check the 
 category "BOLT static infered profile options" for a quick reference on trivial heuristics 
-and its description, and replace the name of the trivial predictor in the field ```-heuristic-based```.
+and its description, and replace the name of the trivial predictor in the field `-heuristic-based`.
 
 ## License
 
