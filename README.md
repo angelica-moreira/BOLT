@@ -267,7 +267,7 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based -pr
 
 ## BOLT + Other Static Predictors Usage
 
-We incorporated in BOLT some trivial static predictor and the [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw)
+We incorporated in BOLT some trivial static predictors and the [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw)
 heuristics.  
 
 ### Step 0
