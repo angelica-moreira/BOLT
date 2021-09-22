@@ -163,7 +163,7 @@ would not be as good, and performance gains with BOLT are expected to be lower.
 If perf record is not available to you, you may collect profile by first
 instrumenting the binary with BOLT and then running it.
 ```
-llvm-bolt <executable> -instrument -o <instrumented-executable>
+$ llvm-bolt <executable> -instrument -o <instrumented-executable>
 ```
 
 After you run instrumented-executable with the desired workload, its BOLT
@@ -313,7 +313,7 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based \
 ## BOLT + Other Static Predictors Usage
 
 We incorporated in BOLT some trivial static predictors and the [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw)
-heuristics. Below it is the steps of how to run BOLT with the Wu and Larus static 
+heuristics. Below are the steps of how to run BOLT with the Wu and Larus static 
 heuristic-based profiler.
 
 ### Step 0
@@ -322,7 +322,11 @@ See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
 
 ### Step 1: Optimize with BOLT+Other Static Predictors
 
-
+Since the trivial predictors and the [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw) predictor are heuristic-based, 
+and therefore perform branch probability inference by using heuristics that analysis the program's source code, 
+you will not need to feed it with a file, you only need to specify the type of predictor you want to use. In the exemple
+below we are using [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw) predictor with the intra-procedural  
+strategy for converting probabilities into frequencies, mode details about this technique can be found at [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw)'s paper.
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-based=wularus  \
@@ -330,6 +334,12 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-bas
                          -dyno-stats -icf=1 -use-gnu-stack
 ```
 
+We also implemented the intrer-procedural algorithm, and using this implementation you may be able to perform
+function reordering better than using the previous infered data, but like mentioned earlier in the BOLT + VESPA
+section, it is not advisable the use of this approach for large programs or highly optimized ones since they 
+usually have lot's of non-reducible graphs, and the intra-procedural techinique combined with the inter-procedural
+techinique provided us worse results when compared agains the binary produced using only the intra-procedural 
+approach.
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -heuristic-based=wularus \
