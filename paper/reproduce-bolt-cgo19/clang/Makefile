@@ -209,7 +209,7 @@ $(BOLT): $(BOLTSOURCE)
 # evaluation set.
 $(GCCSOURCE):
 	mkdir -p $(BENCHMARKS)
-	cd $(BENCHMARKS)    && git clone -q --depth=1 --branch=gcc-8_2_0-release \
+	cd $(BENCHMARKS)    && git clone -q --depth=1 --branch=releases/gcc-8 \
 	  https://github.com/gcc-mirror/gcc gcc
 	cd $(BENCHMARKS)/gcc && ./contrib/download_prerequisites
 

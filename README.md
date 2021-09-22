@@ -7,6 +7,13 @@ An overview of the ideas implemented in BOLT along with a discussion of its
 potential and current results is available in
 [CGO'19 paper](https://research.fb.com/publications/bolt-a-practical-binary-optimizer-for-data-centers-and-beyond/).
 
+# BOLT + VESPA
+VESPA is a static profiler based on ML designed to guide binary optimizations. VESPA removes 
+the need for dynamic profiling to enable binary optimizations, thus simplifying and broadening the 
+applicability of binary-optimization tools. Although VESPA is a general static profiler that can be 
+used with different binary optimizers, we explored the use of VESPA with BOLT and you can see
+the discussion of this combined use here [OOPSLA'21 paper](https://homepages.dcc.ufmg.br/~fernando/publications/papers/AngelicaOOPSLA21.pdf).
+
 ## Input Binary Requirements
 
 BOLT operates on X86-64 and AArch64 ELF binaries. At the minimum, the binaries
@@ -35,10 +42,16 @@ encounter any issues.
 
 ## Installation
 
-### Docker Image
+### Docker Image For Original BOLT 
 
 You can build and use the docker image containing BOLT using our [docker file](./utils/docker/Dockerfile).
 Alternatively, you can build BOLT manually using the steps below.
+
+### Docker Image For BOLT+VESPA
+
+You can acces the docker image containing the artifact of the paper VESPA: Static Profiling for Binary Optimization at 
+[docker hub](https://zenodo.org/record/5502310#.YUo5Li1h1QK). If you have any doubts on how to run the scrips that 
+reproduce the research questions please read the file published at [zenodo](https://zenodo.org/record/5502310#.YUo5Li1h1QK).
 
 ### Manual Build
 
@@ -52,7 +65,7 @@ Start with cloning LLVM and BOLT repos:
 > git clone https://github.com/llvm-mirror/llvm llvm
 > cd llvm/tools
 > git checkout -b llvm-bolt f137ed238db11440f03083b1c88b7ffc0f4af65e
-> git clone https://github.com/facebookincubator/BOLT llvm-bolt
+> git clone https://github.com/angelica-moreira/BOLT.git llvm-bolt 
 > cd ..
 > patch -p 1 < tools/llvm-bolt/llvm.patch
 ```
@@ -90,7 +103,7 @@ Or if you rather use tcmalloc:
 > LD_PRELOAD=/usr/lib64/libtcmalloc_minimal.so llvm-bolt ....
 ```
 
-## Usage
+## Standard BOLT Usage
 
 For a complete practical guide of using BOLT see [Optimizing Clang with BOLT](./docs/OptimizingClang.md).
 
@@ -217,6 +230,68 @@ $ merge-fdata *.fdata > combined.fdata
 Use `combined.fdata` for **Step 3** above to generate a universally optimized
 binary.
 
+## BOLT + VESPA Usage
+
+### Step 0
+
+See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
+
+### Step 1: Extract Code Features
+
+```
+$ llvm-bolt <executable> -gen-features
+```
+
+### Step 2: Generate Inferred Profile
+
+> predict
+> generate prob file
+
+### Step 3: Optimize with BOLT + VESPA
+
+Once you have prob.pdata ready, you can use it for optimizations with BOLT. 
+Assuming your environment is setup to include the right path, execute ```llvm-bolt```:
+
+```
+$ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -ml-based -prob-file=prob.pdata  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -use-gnu-stack
+```
+
+Be aware that the command above do not work well for functions' rearegement
+if you intend to perform this optimization it is advisable that you use the 
+flag ``` -infer-global-counts ``` instead of ``` -infer-local-counts ```
+when executing ```llvm-bolt```:
+
+```
+$ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based -prob-file=prob.pdata  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
+```
+
+## BOLT + Other Static Predictors Usage
+
+We incorporated in BOLT some trivial static predictors and the [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw)
+heuristics. Below it is the steps of how to run BOLT with the Wu and Larus static 
+heuristic-based profiler.
+
+### Step 0
+
+See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
+
+### Step 1: Optimize with BOLT+Other Static Predictors
+
+
+
+```
+$ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-based=wularus  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -use-gnu-stack
+```
+
+
+```
+$ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -heuristic-based=wularus  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -reorder-functions=hfsort -split-eh -use-gnu-stack
+```
+
+For testing the trivial predictions please run BOLT with the -help option and check the 
+category "BOLT static infered profile options" for a quick reference on trivial heuristics 
+and its description, and replace the name of the trivial predictor in the field ```-heuristic-based```.
+
 ## License
 
-BOLT is licensed under [University of Illinois/NCSA Open Source License](./LICENSE.TXT).
+BOLT and BOLT+VESPA are licensed under [University of Illinois/NCSA Open Source License](./LICENSE.TXT).
