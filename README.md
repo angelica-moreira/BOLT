@@ -278,7 +278,8 @@ $ VESPA_SCRIPTS_HOME=${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts/
 $ source ${VIRTUAL_ENV_DIR}/vespa-env/bin/activate
 $ PYTHON_HOME=${VIRTUAL_ENV_DIR}/vespa-env/bin
 $ (vespa-env) $ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/preprocessing.py <folder_path> <stage_code> <result_path>
-$ (vespa-env) $ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/python3 ./vespa_scripts/generate_probfiles.py <model_path> <data_base_path> <output_path> [bin_name]
+$ (vespa-env) $ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/python3 ./vespa_scripts/generate_probfiles.py \
+                                                                      <model_path> <data_base_path> <output_path> [bin_name]
 $ deactivate
 ```
 
@@ -291,7 +292,9 @@ Once you have prob.pdata ready, you can use it for optimizations with BOLT.
 Assuming your environment is setup to include the right path, execute ```llvm-bolt```:
 
 ```
-$ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -ml-based -prob-file=prob.pdata  -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats -icf=1 -use-gnu-stack
+$ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -ml-based -prob-file=prob.pdata \
+                         -reorder-blocks=cache+  -split-functions=3 -split-all-cold -dyno-stats \
+                         -icf=1 -use-gnu-stack
 ```
 
 Be aware that the command above do not work well for functions' rearegement
@@ -322,8 +325,8 @@ See [Step 0](https://github.com/angelica-moreira/BOLT#step-0)
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-based=wularus  \
-$                        -reorder-blocks=cache+  -split-functions=3 -split-all-cold \
-$                        -dyno-stats -icf=1 -use-gnu-stack
+                         -reorder-blocks=cache+  -split-functions=3 -split-all-cold \
+                         -dyno-stats -icf=1 -use-gnu-stack
 ```
 
 
