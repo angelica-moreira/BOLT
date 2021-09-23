@@ -305,8 +305,8 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -ml-based -pro
                          -icf=1 -use-gnu-stack
 ```
 
-Be aware that the command above do not work well for functions' rearegement
-if you intend to perform this optimization it is advisable that you use the 
+Be aware that the command above does not work well for rearrenging functions.
+If you intend to enable this optimization, it is advisable to use the 
 flag `-infer-global-counts` instead of `-infer-local-counts`
 when executing `llvm-bolt`:
 
@@ -341,7 +341,7 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-bas
                          -dyno-stats -icf=1 -use-gnu-stack
 ```
 
-We also implemented the intrer-procedural algorithm, and using this implementation you may be able to perform
+We also implemented the inter-procedural algorithm, and using this implementation you may be able to perform
 function reordering better than using the previous infered data, but like mentioned earlier in the BOLT + VESPA
 section, it is not advisable the use of this approach for large programs or highly optimized ones since they 
 usually have lot's of non-reducible graphs, and the intra-procedural techinique combined with the inter-procedural
