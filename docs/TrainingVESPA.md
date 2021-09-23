@@ -36,7 +36,7 @@ $ VESPA_SCRIPTS_HOME=${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts/
 $ source ${VIRTUAL_ENV_DIR}/vespa-env/bin/activate
 $ PYTHON_HOME=${VIRTUAL_ENV_DIR}/vespa-env/bin
 $ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/preprocessing.py <features_path> <stage_code> <result_path>
-$ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/python3 ./vespa_scripts/generate_vespa.py <data_base_path> <output_model_path>
+$ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/generate_vespa.py <data_base_path> <output_model_path>
 $ deactivate
 ```
 
@@ -46,5 +46,5 @@ can be found at [Step 2](https://github.com/angelica-moreira/BOLT/blob/master/RE
 
 The input variable features_path represents the path where the features.csv is, the stage_code can assume values 0 (train) or
 1 (prediction), and result_path is the path where the preprocessed csv file will be persisted. The input variable
-`output_model_pathis` the path where vespa ml model will be persisted is, and the data_base_path represents the path where the
+`output_model_path` the path where vespa ml model will be persisted is, and the `data_base_path` represents the path where the
 preprocessed csv file was persisted. 
