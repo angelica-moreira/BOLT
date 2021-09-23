@@ -332,8 +332,8 @@ See [Step 0](https://github.com/angelica-moreira/BOLT#step-0) from **Standard BO
 Since the trivial predictors and the [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw) predictor are heuristic-based, 
 and therefore perform branch probability inference by using heuristics that analysis the program's source code, 
 you will not need to feed it with a file, you only need to specify the type of predictor you want to use. In the exemple
-below we are using [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw) predictor with the intra-procedural  
-strategy for converting probabilities into frequencies, mode details about this technique can be found at [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw)'s paper.
+below we are using [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw) predictor with the intra-procedural strategy 
+for converting probabilities into frequencies, mode details about this technique can be found at [Wu and Larus](https://dl.acm.org/doi/pdf/10.1145/192724.192725?casa_token=ojdY5fstGkkAAAAA:E4-6vE2UYL_qneJEzMW3ddP8_Mo1iOF6UvVzLpVFY03wf1mynSDzvBr0Qms2rP3C7EZXzNh9nyM5Zw)'s paper.
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-based=wularus  \
