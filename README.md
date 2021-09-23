@@ -285,6 +285,7 @@ $ deactivate
 
 Note: The `LLVM_BOLT_DIRECTORY` variable represents `llvm-bolt` source directory 
 the `${HOME}/llvm/tools/llvm-bolt/`.
+
 The input variable `features_path` represents the path where the features.csv is, the `stage_code` can assume
 values 0 (train) or 1 (prediction), and `result_path` is the path where the preprocessed csv file will be persisted.
 
@@ -315,6 +316,9 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based \
                          -split-functions=3 -split-all-cold -dyno-stats -icf=1 \
                          -reorder-functions=hfsort -split-eh -use-gnu-stack
 ```
+
+Note: Here we are using the pre-trained model with our 243 programs, read the [OOPSLA'21 paper](https://homepages.dcc.ufmg.br/~fernando/publications/papers/AngelicaOOPSLA21.pdf) for a deitaled information about it, as input for trainning, but feel free to explore tranning with other dataset
+following the steps presented in the [Training VESPA with your own dataset](https://github.com/angelica-moreira/BOLT/blob/master/docs/TrainingVESPA.md#training-vespa-with-your-own-dataset) tutorial.
 
 ## BOLT + Other Static Predictors Usage
 
