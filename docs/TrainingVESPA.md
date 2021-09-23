@@ -1,4 +1,4 @@
-#Training VESPA with your own dataset
+# Training VESPA with your own dataset
 
 ### Step 0
 
