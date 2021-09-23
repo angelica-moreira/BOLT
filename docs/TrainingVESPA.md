@@ -46,5 +46,5 @@ can be found at [Step 2](https://github.com/angelica-moreira/BOLT/blob/master/RE
 
 The input variable features_path represents the path where the features.csv is, the stage_code can assume values 0 (train) or
 1 (prediction), and result_path is the path where the preprocessed csv file will be persisted. The input variable
-output_model_pathis the path where vespa ml model will be persisted is, and the data_base_path represents the path where the
+`output_model_pathis` the path where vespa ml model will be persisted is, and the data_base_path represents the path where the
 preprocessed csv file was persisted. 
