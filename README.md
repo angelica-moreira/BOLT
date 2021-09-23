@@ -50,7 +50,7 @@ Alternatively, you can build BOLT manually using the steps below.
 ### Docker Image For BOLT+VESPA
 
 You can acces the docker image containing the artifact of the paper VESPA: Static Profiling for Binary Optimization at 
-[docker hub](https://zenodo.org/record/5502310#.YUo5Li1h1QK). If you have any doubts on how to run the scrips that 
+[docker hub](https://hub.docker.com/r/angelicamoreira/oopsla21artifac). If you have any doubts on how to run the scripts that 
 reproduce the research questions please read the file published at [zenodo](https://zenodo.org/record/5502310#.YUo5Li1h1QK).
 
 ### Manual Build
