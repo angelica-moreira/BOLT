@@ -5,7 +5,8 @@
 Do not forget to generate your binaries with relocations if you intend to perform
 function rearrangement. Although it is not advisable performing this optimization with
 the static inferred predictors presented currently in this project, due to some regressions
-observed when performing inteprocedural optimizations in
+observed when performing inter-procedural optimizations in comparison with the same binary optimized
+only with the intra-procedural optimization withou function rearrangement enabled.
 
 See [Step 0](https://github.com/angelica-moreira/BOLT/blob/master/README.md#step-0) from Standard BOLT Usage section.
 
