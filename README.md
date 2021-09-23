@@ -278,7 +278,7 @@ be used to guide BOLT optimizations, do as follows:
 $ VESPA_SCRIPTS_HOME=${LLVM_BOLT_DIRECTORY}/utils/vespa_scripts/
 $ source ${VIRTUAL_ENV_DIR}/vespa-env/bin/activate
 $ PYTHON_HOME=${VIRTUAL_ENV_DIR}/vespa-env/bin
-$ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/preprocessing.py <folder_path> <stage_code> <result_path>
+$ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/preprocessing.py <features_path> <stage_code> <result_path>
 $ ${PYTHON_HOME}/python3 ${VESPA_SCRIPTS_HOME}/python3 ./vespa_scripts/generate_probfiles.py \
                                                           <model_path> <data_base_path> <output_path> [bin_name]
 $ deactivate
@@ -286,6 +286,13 @@ $ deactivate
 
 Note: The `LLVM_BOLT_DIRECTORY` variable represents `llvm-bolt` source directory 
 the `${HOME}/llvm/tools/llvm-bolt/`.
+The input variable `features_path` represents the path where the features.csv is, the `stage_code` can assume
+values 0 (train) or 1 (prediction), and `result_path` is the path where the preprocessed csv file will leave.
+
+The input variable `model_path` is the path where vespa ml model is, `data_base_path` represents the path where 
+the preprocessed csv file leaves, the `output_path` is where you want to persist the probabilities file and 
+`bin_name` is optional, if you enter the binary name the output file will be named as `bin_name_ml.pdata`, 
+otherwise the file will be generated with the default name (`prob.pdata`).
 
 ### Step 3: Optimize with BOLT + VESPA
 
