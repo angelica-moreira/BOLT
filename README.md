@@ -317,7 +317,7 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -ml-based \
                          -reorder-functions=hfsort -split-eh -use-gnu-stack
 ```
 
-Note: Here we are using the pre-trained model with our 243 programs, read the [OOPSLA'21 paper](https://homepages.dcc.ufmg.br/~fernando/publications/papers/AngelicaOOPSLA21.pdf) for a deitaled information about it, as input for trainning, but feel free to explore tranning with other dataset
+Note: Here we are using the pre-trained model with our 243 programs, read the [OOPSLA'21 paper](https://homepages.dcc.ufmg.br/~fernando/publications/papers/AngelicaOOPSLA21.pdf) for a deitaled information about it, as input for training, but feel free to explore tranning with other dataset
 following the steps presented in the [Training VESPA with your own dataset](https://github.com/angelica-moreira/BOLT/blob/master/docs/TrainingVESPA.md#training-vespa-with-your-own-dataset) tutorial.
 
 ## BOLT + Other Static Predictors Usage
