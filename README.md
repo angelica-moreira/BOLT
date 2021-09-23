@@ -287,10 +287,10 @@ $ deactivate
 Note: The `LLVM_BOLT_DIRECTORY` variable represents `llvm-bolt` source directory 
 the `${HOME}/llvm/tools/llvm-bolt/`.
 The input variable `features_path` represents the path where the features.csv is, the `stage_code` can assume
-values 0 (train) or 1 (prediction), and `result_path` is the path where the preprocessed csv file will leave.
+values 0 (train) or 1 (prediction), and `result_path` is the path where the preprocessed csv file will be persisted.
 
 The input variable `model_path` is the path where vespa ml model is, `data_base_path` represents the path where 
-the preprocessed csv file leaves, the `output_path` is where you want to persist the probabilities file and 
+the preprocessed csv file was persisted, the `output_path` is where you want to persist the probabilities file and 
 `bin_name` is optional, if you enter the binary name the output file will be named as `bin_name_ml.pdata`, 
 otherwise the file will be generated with the default name (`prob.pdata`).
 
@@ -341,12 +341,12 @@ $ llvm-bolt <executable> -o <executable>.bolt -infer-local-counts -heuristic-bas
                          -dyno-stats -icf=1 -use-gnu-stack
 ```
 
-We also implemented the inter-procedural algorithm, and using this implementation you may be able to perform
-function reordering better than using the previous infered data, but like mentioned earlier in the BOLT + VESPA
-section, it is not advisable the use of this approach for large programs or highly optimized ones since they 
-usually have lot's of non-reducible graphs, and the intra-procedural techinique combined with the inter-procedural
-techinique provided us worse results when compared agains the binary produced using only the intra-procedural 
-approach.
+We also implemented the inter-procedural algorithm described in the paper. Using this implementation, you may 
+be able to perform function reordering better than using the previously inferred data. However, as mentioned 
+earlier in the BOLT + VESPA section, it is not advisable to use this approach for large or highly optimized
+programs, since they usually have a large number of non-reducible graphs. This caused a combination of both 
+intra-procedural and inter-procedural techiniques to yield worse results when compared against the binary 
+produced using only the intra-procedural propagation.
 
 ```
 $ llvm-bolt <executable> -o <executable>.bolt -infer-global-counts -heuristic-based=wularus \
