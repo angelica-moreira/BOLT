@@ -20,6 +20,7 @@
 #include "DWARFRewriter.h"
 #include "DataAggregator.h"
 #include "DataReader.h"
+#include "DebugData.h"
 #include "Exceptions.h"
 #include "ExecutableFileMemoryManager.h"
 #include "MCPlusBuilder.h"
@@ -71,6 +72,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include <algorithm>
 #include <fstream>
+#include <llvm/Support/Error.h>
 #include <stack>
 #include <system_error>
 #include <thread>
@@ -521,10 +523,13 @@ RewriteInstance::RewriteInstance(ELFObjectFileBase *File, const int Argc,
   BAT = llvm::make_unique<BoltAddressTranslation>(*BC);
 
   if (opts::UpdateDebugSections)
-    DebugInfoRewriter = llvm::make_unique<DWARFRewriter>(*BC, SectionPatchers);
+    DebugInfoRewriter = llvm::make_unique<DWARFRewriter>(*BC);
 
-  if (opts::Hugify)
+  if (opts::Instrument) {
+    BC->setRuntimeLibrary(llvm::make_unique<InstrumentationRuntimeLibrary>());
+  } else if (opts::Hugify) {
     BC->setRuntimeLibrary(llvm::make_unique<HugifyRuntimeLibrary>());
+  }
 }
 
 RewriteInstance::~RewriteInstance() {}
@@ -1007,34 +1012,6 @@ void RewriteInstance::discoverFileObjects() {
     --LastSymbol;
   }
 
-  auto getNextAddress = [&](std::vector<SymbolRef>::const_iterator Itr) {
-    const auto SymbolSection = cantFail(Itr->getSection());
-    const auto SymbolAddress = cantFail(Itr->getAddress());
-    const auto SymbolEndAddress = SymbolAddress + ELFSymbolRef(*Itr).getSize();
-
-    // absolute sym
-    if (SymbolSection == InputFile->section_end())
-      return SymbolEndAddress;
-
-    while (Itr != LastSymbol &&
-           cantFail(std::next(Itr)->getSection()) == SymbolSection &&
-           cantFail(std::next(Itr)->getAddress()) == SymbolAddress) {
-      ++Itr;
-    }
-
-    if (Itr != LastSymbol &&
-        cantFail(std::next(Itr)->getSection()) == SymbolSection)
-      return cantFail(std::next(Itr)->getAddress());
-
-    const auto SymbolSectionEndAddress =
-      SymbolSection->getAddress() + SymbolSection->getSize();
-    if ((ELFSectionRef(*SymbolSection).getFlags() & ELF::SHF_TLS) ||
-        SymbolEndAddress > SymbolSectionEndAddress)
-      return SymbolEndAddress;
-
-    return SymbolSectionEndAddress;
-  };
-
   BinaryFunction *PreviousFunction = nullptr;
   unsigned AnonymousId = 0;
 
@@ -1116,8 +1093,6 @@ void RewriteInstance::discoverFileObjects() {
     }
 
     uint64_t SymbolSize = ELFSymbolRef(Symbol).getSize();
-    uint64_t TentativeSize = SymbolSize ? SymbolSize
-                                        : getNextAddress(ISym) - Address;
     uint64_t SymbolAlignment = Symbol.getAlignment();
     unsigned SymbolFlags = Symbol.getFlags();
 
@@ -1137,7 +1112,7 @@ void RewriteInstance::discoverFileObjects() {
       DEBUG(if (opts::Verbosity > 1) {
           dbgs() << "BOLT-INFO: absolute sym " << UniqueName << "\n";
         });
-      registerName(TentativeSize);
+      registerName(SymbolSize);
       continue;
     }
 
@@ -1148,7 +1123,7 @@ void RewriteInstance::discoverFileObjects() {
       assert(SymbolType != SymbolRef::ST_Function &&
              "unexpected function inside non-code section");
       DEBUG(dbgs() << "BOLT-DEBUG: rejecting as symbol is not in code\n");
-      registerName(TentativeSize);
+      registerName(SymbolSize);
       continue;
     }
 
@@ -2207,13 +2182,16 @@ void RewriteInstance::readDynamicRelocations(const SectionRef &Section) {
                << SectionName << ":\n");
 
   for (const auto &Rel : Section.relocations()) {
-    auto SymbolIter = Rel.getSymbol();
+    auto RType = Rel.getType();
+    if (Relocation::isNone(RType))
+      continue;
 
     StringRef SymbolName = "<none>";
     MCSymbol *Symbol = nullptr;
     uint64_t SymbolAddress = 0;
     const uint64_t Addend = getRelocationAddend(InputFile, Rel);
 
+    auto SymbolIter = Rel.getSymbol();
     if (SymbolIter != InputFile->symbol_end()) {
       SymbolName = cantFail(SymbolIter->getName());
       auto *BD = BC->getBinaryDataByName(SymbolName);
@@ -3177,9 +3155,12 @@ void RewriteInstance::updateSDTMarkers() {
   NamedRegionTimer T("updateSDTMarkers", "update SDT markers", TimerGroupName,
                      TimerGroupDesc, opts::TimeRewrite);
 
-  SectionPatchers[".note.stapsdt"] = llvm::make_unique<SimpleBinaryPatcher>();
-  auto *SDTNotePatcher = static_cast<SimpleBinaryPatcher *>(
-      SectionPatchers[".note.stapsdt"].get());
+  if (!SDTSection)
+    return;
+  SDTSection->registerPatcher(std::make_unique<SimpleBinaryPatcher>());
+
+  auto *SDTNotePatcher =
+      static_cast<SimpleBinaryPatcher *>(SDTSection->getPatcher());
   for (auto &SDTInfoKV : BC->SDTMarkers) {
     const auto OriginalAddress = SDTInfoKV.first;
     auto &SDTInfo = SDTInfoKV.second;
@@ -3221,14 +3202,11 @@ void RewriteInstance::updateLKMarkers() {
     for (auto &LKMarkerInfo : LKMarkerInfoKV.second) {
       StringRef SectionName = LKMarkerInfo.SectionName;
       SimpleBinaryPatcher *LKPatcher;
-      if (SectionPatchers.find(SectionName) != SectionPatchers.end()) {
-        LKPatcher = static_cast<SimpleBinaryPatcher *>(
-            SectionPatchers[SectionName].get());
-      } else {
-        SectionPatchers[SectionName] = llvm::make_unique<SimpleBinaryPatcher>();
-        LKPatcher = static_cast<SimpleBinaryPatcher *>(
-            SectionPatchers[SectionName].get());
-      }
+      auto BSec = BC->getUniqueSectionByName(SectionName);
+      assert(BSec && "missing section info for kernel section");
+      if (!BSec->getPatcher())
+        BSec->registerPatcher(std::make_unique<SimpleBinaryPatcher>());
+      LKPatcher = static_cast<SimpleBinaryPatcher *>(BSec->getPatcher());
       PatchCounts[SectionName]++;
       if (LKMarkerInfo.IsPCRelative) {
         LKPatcher->addLE32Patch(LKMarkerInfo.SectionOffset,
@@ -3731,6 +3709,7 @@ void RewriteInstance::rewriteNoteSections() {
 
     StringRef SectionName =
         cantFail(Obj->getSectionName(&Section), "cannot get section name");
+    auto BSec = BC->getUniqueSectionByName(SectionName);
 
     if (shouldStrip(Section, SectionName))
       continue;
@@ -3746,10 +3725,8 @@ void RewriteInstance::rewriteNoteSections() {
     if (!willOverwriteSection(SectionName)) {
       Size = Section.sh_size;
       std::string Data = InputFile->getData().substr(Section.sh_offset, Size);
-      auto SectionPatchersIt = SectionPatchers.find(SectionName);
-      if (SectionPatchersIt != SectionPatchers.end()) {
-        (*SectionPatchersIt->second).patchBinary(Data);
-      }
+      if (BSec && BSec->getPatcher())
+        BSec->getPatcher()->patchBinary(Data);
       OS << Data;
 
       // Add padding as the section extension might rely on the alignment.
@@ -3757,7 +3734,6 @@ void RewriteInstance::rewriteNoteSections() {
     }
 
     // Perform section post-processing.
-    auto BSec = BC->getUniqueSectionByName(SectionName);
     uint8_t *SectionData = nullptr;
     if (BSec && !BSec->isAllocatable()) {
       assert(BSec->getAlignment() <= Section.sh_addralign &&
@@ -3983,23 +3959,28 @@ std::vector<ELFShdrTy> RewriteInstance::getOutputSections(
       });
 
   // Fix section sizes to prevent overlapping.
-  for (uint32_t Index = 1; Index < OutputSections.size(); ++Index) {
-    auto &PrevSection = OutputSections[Index - 1].second;
-    auto &Section = OutputSections[Index].second;
+  ELFShdrTy *PrevSection = nullptr;
+  StringRef PrevSectionName;
+  for (auto &SectionKV : OutputSections) {
+    ELFShdrTy &Section = SectionKV.second;
 
-    // Skip TBSS section size adjustment.
-    if (PrevSection.sh_type == ELF::SHT_NOBITS &&
-        (PrevSection.sh_flags & ELF::SHF_TLS))
+    // TBSS section does not take file or memory space. Ignore it for layout
+    // purposes.
+    if (Section.sh_type == ELF::SHT_NOBITS && (Section.sh_flags & ELF::SHF_TLS))
       continue;
 
-    if (PrevSection.sh_addr + PrevSection.sh_size > Section.sh_addr) {
+    if (PrevSection &&
+        PrevSection->sh_addr + PrevSection->sh_size > Section.sh_addr) {
       if (opts::Verbosity > 1) {
-        outs() << "BOLT-INFO: adjusting size for section "
-               << OutputSections[Index - 1].first << '\n';
+        outs() << "BOLT-INFO: adjusting size for section " << PrevSectionName
+               << '\n';
       }
-      PrevSection.sh_size = Section.sh_addr > PrevSection.sh_addr ?
-        Section.sh_addr - PrevSection.sh_addr : 0;
+      PrevSection->sh_size = Section.sh_addr > PrevSection->sh_addr ?
+        Section.sh_addr - PrevSection->sh_addr : 0;
     }
+
+    PrevSection = &Section;
+    PrevSectionName = SectionKV.first;
   }
 
   uint64_t LastFileOffset = 0;

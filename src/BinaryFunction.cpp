@@ -704,11 +704,11 @@ BinaryFunction::processIndirectBranch(MCInst &Instruction,
                                       unsigned Size,
                                       uint64_t Offset,
                                       uint64_t &TargetAddress) {
-  const auto PtrSize = BC.AsmInfo->getCodePointerSize();
+  const unsigned PtrSize = BC.AsmInfo->getCodePointerSize();
 
-  // An instruction referencing memory used by jump instruction (directly or
-  // via register). This location could be an array of function pointers
-  // in case of indirect tail call, or a jump table.
+  // The instruction referencing memory used by the branch instruction.
+  // It could be the branch instruction itself or one of the instructions
+  // setting the value of the register used by the branch.
   MCInst *MemLocInstr;
 
   // Address of the table referenced by MemLocInstr. Could be either an
@@ -739,26 +739,27 @@ BinaryFunction::processIndirectBranch(MCInst &Instruction,
     }
   }
 
-  auto Type = BC.MIB->analyzeIndirectBranch(Instruction,
-                                            Begin,
-                                            Instructions.end(),
-                                            PtrSize,
-                                            MemLocInstr,
-                                            BaseRegNum,
-                                            IndexRegNum,
-                                            DispValue,
-                                            DispExpr,
-                                            PCRelBaseInstr);
+  IndirectBranchType BranchType =
+    BC.MIB->analyzeIndirectBranch(Instruction,
+                                  Begin,
+                                  Instructions.end(),
+                                  PtrSize,
+                                  MemLocInstr,
+                                  BaseRegNum,
+                                  IndexRegNum,
+                                  DispValue,
+                                  DispExpr,
+                                  PCRelBaseInstr);
 
-  if (Type == IndirectBranchType::UNKNOWN && !MemLocInstr)
-    return Type;
+  if (BranchType == IndirectBranchType::UNKNOWN && !MemLocInstr)
+    return BranchType;
 
   if (MemLocInstr != &Instruction)
     IndexRegNum = BC.MIB->getNoRegister();
 
   if (BC.isAArch64()) {
-    const auto *Sym = BC.MIB->getTargetSymbol(*PCRelBaseInstr, 1);
-    assert (Sym && "Symbol extraction failed");
+    const MCSymbol *Sym = BC.MIB->getTargetSymbol(*PCRelBaseInstr, 1);
+    assert(Sym && "Symbol extraction failed");
     auto SymValueOrError = BC.getSymbolValue(*Sym);
     if (SymValueOrError) {
       PCRelAddr = *SymValueOrError;
@@ -830,8 +831,8 @@ BinaryFunction::processIndirectBranch(MCInst &Instruction,
     return IndirectBranchType::POSSIBLE_TAIL_CALL;
   }
 
-  if (Type == IndirectBranchType::POSSIBLE_FIXED_BRANCH) {
-    auto Value = BC.getPointerAtAddress(ArrayStart);
+  if (BranchType == IndirectBranchType::POSSIBLE_FIXED_BRANCH) {
+    ErrorOr<uint64_t> Value = BC.getPointerAtAddress(ArrayStart);
     if (!Value)
       return IndirectBranchType::UNKNOWN;
 
@@ -845,63 +846,49 @@ BinaryFunction::processIndirectBranch(MCInst &Instruction,
            << '\n';
 
     TargetAddress = *Value;
-    return Type;
+    return BranchType;
   }
-
-  auto useJumpTableForInstruction = [&](JumpTable::JumpTableType JTType) {
-    const MCSymbol *JTLabel =
-        BC.getOrCreateJumpTable(*this, ArrayStart, JTType);
-
-    BC.MIB->replaceMemOperandDisp(const_cast<MCInst &>(*MemLocInstr),
-                                  JTLabel, BC.Ctx.get());
-    BC.MIB->setJumpTable(Instruction, ArrayStart, IndexRegNum);
-
-    JTSites.emplace_back(Offset, ArrayStart);
-  };
 
   // Check if there's already a jump table registered at this address.
-  // At this point, all jump tables are empty.
-  if (auto *JT = BC.getJumpTableContainingAddress(ArrayStart)) {
-    // Make sure the type of the table matches the code.
-    if (Type == IndirectBranchType::POSSIBLE_PIC_JUMP_TABLE) {
-      assert(JT->Type == JumpTable::JTT_PIC && "PIC jump table expected");
-    } else {
-      assert(JT->Type == JumpTable::JTT_NORMAL && "normal jump table expected");
-      Type = IndirectBranchType::POSSIBLE_JUMP_TABLE;
+  MemoryContentsType MemType;
+  if (JumpTable *JT = BC.getJumpTableContainingAddress(ArrayStart)) {
+    switch (JT->Type) {
+    case JumpTable::JTT_NORMAL:
+      MemType = MemoryContentsType::POSSIBLE_JUMP_TABLE;
+      break;
+    case JumpTable::JTT_PIC:
+      MemType = MemoryContentsType::POSSIBLE_PIC_JUMP_TABLE;
+      break;
     }
-
-    useJumpTableForInstruction(JT->Type);
-
-    return Type;
+  } else {
+    MemType = BC.analyzeMemoryAt(ArrayStart, *this);
   }
 
-  const auto MemType = BC.analyzeMemoryAt(ArrayStart, *this);
-  if (Type == IndirectBranchType::POSSIBLE_PIC_JUMP_TABLE) {
-    assert(MemType == MemoryContentsType::POSSIBLE_PIC_JUMP_TABLE &&
-           "PIC jump table heuristic failure");
-    useJumpTableForInstruction(JumpTable::JTT_PIC);
-    return Type;
+  // Check that jump table type in instruction pattern matches memory contents.
+  JumpTable::JumpTableType JTType;
+  if (BranchType == IndirectBranchType::POSSIBLE_PIC_JUMP_TABLE) {
+    if (MemType != MemoryContentsType::POSSIBLE_PIC_JUMP_TABLE)
+      return IndirectBranchType::UNKNOWN;
+    JTType = JumpTable::JTT_PIC;
+  } else {
+    if (MemType == MemoryContentsType::POSSIBLE_PIC_JUMP_TABLE)
+      return IndirectBranchType::UNKNOWN;
+
+    if (MemType == MemoryContentsType::UNKNOWN)
+      return IndirectBranchType::POSSIBLE_TAIL_CALL;
+
+    BranchType = IndirectBranchType::POSSIBLE_JUMP_TABLE;
+    JTType = JumpTable::JTT_NORMAL;
   }
 
-  if (MemType == MemoryContentsType::POSSIBLE_JUMP_TABLE) {
-    assert(Type == IndirectBranchType::UNKNOWN &&
-          "non-PIC jump table heuristic failure");
-    useJumpTableForInstruction(JumpTable::JTT_NORMAL);
-    return IndirectBranchType::POSSIBLE_JUMP_TABLE;
-  }
+  // Convert the instruction into jump table branch.
+  const MCSymbol *JTLabel = BC.getOrCreateJumpTable(*this, ArrayStart, JTType);
+  BC.MIB->replaceMemOperandDisp(*MemLocInstr, JTLabel, BC.Ctx.get());
+  BC.MIB->setJumpTable(Instruction, ArrayStart, IndexRegNum);
 
-  // We have a possible tail call, so let's add the value read from the possible
-  // memory location as a reference. Only do that if the address we read is sane
-  // enough (is inside an allocatable section). It is possible that we read
-  // garbage if the load instruction we analyzed is in a basic block different
-  // than the one where the indirect jump is. However, later,
-  // postProcessIndirectBranches() is going to mark the function as non-simple
-  // in this case.
-  auto Value = BC.getPointerAtAddress(ArrayStart);
-  if (Value && BC.getSectionForAddress(*Value))
-    InterproceduralReferences.insert(*Value);
+  JTSites.emplace_back(Offset, ArrayStart);
 
-  return IndirectBranchType::POSSIBLE_TAIL_CALL;
+  return BranchType;
 }
 
 MCSymbol *BinaryFunction::getOrCreateLocalLabel(uint64_t Address,
@@ -3765,7 +3752,7 @@ bool BinaryFunction::checkForAmbiguousJumpTables() {
 
 void BinaryFunction::disambiguateJumpTables(
     MCPlusBuilder::AllocatorIdTy AllocId) {
-  assert((opts::JumpTables != JTS_BASIC && isSimple()) || BC.HasRelocations);
+  assert((opts::JumpTables != JTS_BASIC && isSimple()) || !BC.HasRelocations);
   SmallPtrSet<JumpTable *, 4> JumpTables;
   for (auto &BB : BasicBlocks) {
     for (auto &Inst : *BB) {
@@ -3782,51 +3769,70 @@ void BinaryFunction::disambiguateJumpTables(
       // This instruction is an indirect jump using a jump table, but it is
       // using the same jump table of another jump. Try all our tricks to
       // extract the jump table symbol and make it point to a new, duplicated JT
+      MCPhysReg BaseReg1;
       uint64_t Scale;
       const MCSymbol *Target;
+      // In case we match if our first matcher, first instruction is the one to
+      // patch
       MCInst *JTLoadInst = &Inst;
       // Try a standard indirect jump matcher, scale 8
-      auto IndJmpMatcher = BC.MIB->matchIndJmp(
-          BC.MIB->matchReg(), BC.MIB->matchImm(Scale), BC.MIB->matchReg(),
-          /*Offset=*/BC.MIB->matchSymbol(Target));
-      if (!BC.MIB->hasPCRelOperand(Inst) ||
-          !IndJmpMatcher->match(
+      auto IndJmpMatcher =
+          BC.MIB->matchIndJmp(BC.MIB->matchReg(BaseReg1),
+                              BC.MIB->matchImm(Scale), BC.MIB->matchReg(),
+                              /*Offset=*/BC.MIB->matchSymbol(Target));
+      if (!IndJmpMatcher->match(
               *BC.MRI, *BC.MIB,
               MutableArrayRef<MCInst>(&*BB->begin(), &Inst + 1), -1) ||
+          BaseReg1 != BC.MIB->getNoRegister() ||
           Scale != 8) {
-        // Standard JT matching failed. Trying now:
-        // PIC-style matcher, scale 4
-        //    addq    %rdx, %rsi
-        //    addq    %rdx, %rdi
-        //    leaq    DATAat0x402450(%rip), %r11
-        //    movslq  (%r11,%rdx,4), %rcx
-        //    addq    %r11, %rcx
-        //    jmpq    *%rcx # JUMPTABLE @0x402450
-        MCPhysReg BaseReg1;
         MCPhysReg BaseReg2;
         uint64_t Offset;
-        auto PICIndJmpMatcher = BC.MIB->matchIndJmp(BC.MIB->matchAdd(
-            BC.MIB->matchReg(BaseReg1),
-            BC.MIB->matchLoad(BC.MIB->matchReg(BaseReg2),
-                              BC.MIB->matchImm(Scale), BC.MIB->matchReg(),
-                              BC.MIB->matchImm(Offset))));
-        auto LEAMatcherOwner =
-            BC.MIB->matchLoadAddr(BC.MIB->matchSymbol(Target));
-        auto LEAMatcher = LEAMatcherOwner.get();
-        auto PICBaseAddrMatcher = BC.MIB->matchIndJmp(BC.MIB->matchAdd(
-            std::move(LEAMatcherOwner), BC.MIB->matchAnyOperand()));
-        if (!PICIndJmpMatcher->match(
+        // Standard JT matching failed. Trying now:
+        //     movq  "jt.2397/1"(,%rax,8), %rax
+        //     jmpq  *%rax
+        auto LoadMatcherOwner = BC.MIB->matchLoad(
+            BC.MIB->matchReg(BaseReg1), BC.MIB->matchImm(Scale),
+            BC.MIB->matchReg(), /*Offset=*/BC.MIB->matchSymbol(Target));
+        auto LoadMatcher = LoadMatcherOwner.get();
+        auto IndJmpMatcher2 = BC.MIB->matchIndJmp(std::move(LoadMatcherOwner));
+        if (!IndJmpMatcher2->match(
                 *BC.MRI, *BC.MIB,
                 MutableArrayRef<MCInst>(&*BB->begin(), &Inst + 1), -1) ||
-            Scale != 4 || BaseReg1 != BaseReg2 || Offset != 0 ||
-            !PICBaseAddrMatcher->match(
-                *BC.MRI, *BC.MIB,
-                MutableArrayRef<MCInst>(&*BB->begin(), &Inst + 1), -1)) {
-          llvm_unreachable("Failed to extract jump table base");
-          continue;
+            BaseReg1 != BC.MIB->getNoRegister() || Scale != 8) {
+          // JT matching failed. Trying now:
+          // PIC-style matcher, scale 4
+          //    addq    %rdx, %rsi
+          //    addq    %rdx, %rdi
+          //    leaq    DATAat0x402450(%rip), %r11
+          //    movslq  (%r11,%rdx,4), %rcx
+          //    addq    %r11, %rcx
+          //    jmpq    *%rcx # JUMPTABLE @0x402450
+          auto PICIndJmpMatcher = BC.MIB->matchIndJmp(BC.MIB->matchAdd(
+              BC.MIB->matchReg(BaseReg1),
+              BC.MIB->matchLoad(BC.MIB->matchReg(BaseReg2),
+                                BC.MIB->matchImm(Scale), BC.MIB->matchReg(),
+                                BC.MIB->matchImm(Offset))));
+          auto LEAMatcherOwner =
+              BC.MIB->matchLoadAddr(BC.MIB->matchSymbol(Target));
+          auto LEAMatcher = LEAMatcherOwner.get();
+          auto PICBaseAddrMatcher = BC.MIB->matchIndJmp(BC.MIB->matchAdd(
+              std::move(LEAMatcherOwner), BC.MIB->matchAnyOperand()));
+          if (!PICIndJmpMatcher->match(
+                  *BC.MRI, *BC.MIB,
+                  MutableArrayRef<MCInst>(&*BB->begin(), &Inst + 1), -1) ||
+              Scale != 4 || BaseReg1 != BaseReg2 || Offset != 0 ||
+              !PICBaseAddrMatcher->match(
+                  *BC.MRI, *BC.MIB,
+                  MutableArrayRef<MCInst>(&*BB->begin(), &Inst + 1), -1)) {
+            llvm_unreachable("Failed to extract jump table base");
+            continue;
+          }
+          // Matched PIC, identify the instruction with the reference to the JT
+          JTLoadInst = LEAMatcher->CurInst;
+        } else {
+          // Matched non-PIC
+          JTLoadInst = LoadMatcher->CurInst;
         }
-        // Matched PIC
-        JTLoadInst = &*LEAMatcher->CurInst;
       }
 
       uint64_t NewJumpTableID{0};
