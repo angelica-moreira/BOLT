@@ -131,6 +131,7 @@ public:
     PF_LBR = 1,          /// Profile is based on last branch records.
     PF_SAMPLE = 2,       /// Non-LBR sample-based profile.
     PF_MEMEVENT = 4,     /// Profile has mem events.
+    PF_STATIC = 5,       /// Static inferred profile.
   };
 
   /// Struct for tracking exception handling ranges.
@@ -381,6 +382,10 @@ private:
   /// Last computed hash value. Note that the value could be recomputed using
   /// different parameters by every pass.
   mutable uint64_t Hash{0};
+
+  /// Last computed hash value. Note that the value was computed based on terminators
+  /// opcodes and possibly their operands opcodes.
+  mutable uint64_t BBHash{0};
 
   /// For PLT functions it contains a symbol associated with a function
   /// reference. It is nullptr for non-PLT functions.
@@ -1790,6 +1795,10 @@ public:
     ProfileMatchRatio = 1.0f;
   }
 
+  void unsetProfileMatchRatio(){
+    ProfileMatchRatio = 0.0f;
+  }
+
   /// Return flags describing a profile for this function.
   uint16_t getProfileFlags() const {
     return ProfileFlags;
@@ -2405,6 +2414,12 @@ public:
     return Hash;
   }
 
+  /// Returns the last computed hash value of the function
+  /// based only on terminals instructions info.
+  size_t getBBHash() const {
+    return BBHash;
+  }
+
   using OperandHashFuncTy =
     function_ref<typename std::string(const MCOperand&)>;
 
@@ -2416,9 +2431,10 @@ public:
   /// By default, instruction operands are ignored while calculating the hash.
   /// The caller can change this via passing \p OperandHashFunc function.
   /// The return result of this function will be mixed with internal hash.
-  size_t computeHash(bool UseDFS = false,
+  size_t computeHash(bool UseDFS = false, 
                      OperandHashFuncTy OperandHashFunc =
-                       [](const MCOperand&) { return std::string(); }) const;
+                       [](const MCOperand&) { return std::string(); },
+                       bool OnlyTerminals = false) const;
 
   void setDWARFUnit(DWARFUnit *Unit) {
     DwarfUnit = Unit;

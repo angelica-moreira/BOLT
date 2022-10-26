@@ -32,6 +32,16 @@ IgnoreHash("profile-ignore-hash",
   cl::Hidden,
   cl::cat(BoltOptCategory));
 
+
+
+static llvm::cl::opt<bool>
+Bmat("bmat",
+  cl::desc("use bmat strategy"),
+  cl::init(false),
+  cl::ZeroOrMore,
+  cl::Hidden,
+  cl::cat(BoltOptCategory));
+
 }
 
 namespace llvm {
@@ -92,7 +102,8 @@ bool YAMLProfileReader::parseFunctionProfile(
 
   BF.setExecutionCount(YamlBF.ExecCount);
 
-  if (!opts::IgnoreHash && YamlBF.Hash != BF.computeHash(/*UseDFS=*/true)) {
+  if (!opts::IgnoreHash && (YamlBF.Hash != BF.computeHash(/*UseDFS=*/true)
+                            || (opts::Bmat && YamlBF.BBHash != static_cast<uint64_t>(BF.getBBHash())))) {
     if (opts::Verbosity >= 1)
       errs() << "BOLT-WARNING: function hash mismatch\n";
     ProfileMatched = false;
@@ -318,6 +329,12 @@ Error YAMLProfileReader::readProfile(BinaryContext &BC) {
     if (!opts::IgnoreHash &&
         Profile.Hash == static_cast<uint64_t>(BF.getHash()))
       return true;
+    if (opts::Bmat && 
+        Profile.BBHash == static_cast<uint64_t>(BF.getBBHash())){
+          BF.markProfiled(2); // validating profile information based on last 
+                              // conditional branch hash code
+      return true;
+    }
     return false;
   };
 

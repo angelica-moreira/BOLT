@@ -3580,8 +3580,9 @@ BinaryFunction::BasicBlockOrderType BinaryFunction::dfs() const {
   return DFS;
 }
 
-size_t BinaryFunction::computeHash(bool UseDFS,
-                                   OperandHashFuncTy OperandHashFunc) const {
+size_t BinaryFunction::computeHash(bool UseDFS, 
+                                   OperandHashFuncTy OperandHashFunc,
+                                   bool OnlyTerminals) const {
   if (size() == 0)
     return 0;
 
@@ -3592,6 +3593,11 @@ size_t BinaryFunction::computeHash(bool UseDFS,
   // The hash is computed by creating a string of all instruction opcodes and
   // possibly their operands and then hashing that string with std::hash.
   std::string HashString;
+
+  // The hash is computed by creating a string of all terminators' instruction 
+  // opcodes and possibly their operands and then hashing that string with std::hash.
+  std::string BBHashString;
+
   for (const auto *BB : Order) {
     for (const auto &Inst : *BB) {
       unsigned Opcode = Inst.getOpcode();
@@ -3605,20 +3611,31 @@ size_t BinaryFunction::computeHash(bool UseDFS,
       if (BC.MIB->isUnconditionalBranch(Inst))
         continue;
 
-      if (Opcode == 0)
+      bool isTerminator = BC.MIB->isTerminator(Inst);
+      if (Opcode == 0) {
         HashString.push_back(0);
+        if(isTerminator)
+          BBHashString.push_back(0);
+      }
 
       while (Opcode) {
         uint8_t LSB = Opcode & 0xff;
         HashString.push_back(LSB);
+        if(isTerminator)
+          BBHashString.push_back(LSB);
         Opcode = Opcode >> 8;
       }
 
       for (int I = 0, E = MCPlus::getNumPrimeOperands(Inst); I != E; ++I) {
         HashString.append(OperandHashFunc(Inst.getOperand(I)));
+        if(isTerminator)
+          BBHashString.append(OperandHashFunc(Inst.getOperand(I)));
       }
     }
   }
+
+
+  BBHash = std::hash<std::string>{}(BBHashString);
 
   return Hash = std::hash<std::string>{}(HashString);
 }
