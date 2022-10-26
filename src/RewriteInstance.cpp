@@ -97,6 +97,7 @@ extern cl::OptionCategory BoltDiffCategory;
 extern cl::OptionCategory BoltOptCategory;
 extern cl::OptionCategory BoltOutputCategory;
 extern cl::OptionCategory InferenceCategory;
+extern cl::OptionCategory StaleCategory;
 extern cl::OptionCategory AggregatorCategory;
 
 extern cl::opt<MacroFusionType> AlignMacroOpFusion;
@@ -113,6 +114,39 @@ AlignText("align-text",
   cl::ZeroOrMore,
   cl::Hidden,
   cl::cat(BoltCategory));
+
+cl::opt<bool> 
+BoostStaleProfile(
+    "boost-stale-profile",
+    cl::desc("enhance bolt's capability to use stale profile"), 
+    cl::init(false),
+    cl::Hidden, 
+    cl::ZeroOrMore, 
+    cl::cat(StaleCategory));
+
+cl::opt<bool> 
+WuLarusStaleProfile(
+    "wularus-stale-profile",
+    cl::desc("empower stale profile boster with wu larus heuristics"),
+    cl::init(false), 
+    cl::Hidden, 
+    cl::ZeroOrMore, 
+    cl::cat(StaleCategory));
+
+cl::opt<bool> 
+VespaStaleProfile(
+    "vespa-stale-profile", 
+    cl::desc("empower stale profile boster with vespa"),
+    cl::init(false), 
+    cl::Hidden, 
+    cl::ZeroOrMore, 
+    cl::cat(StaleCategory));
+
+cl::opt<bool> 
+ProbStaleData("prob-stale-profile",
+                                   cl::desc("data in probability format"),
+                                   cl::init(false), cl::Hidden, cl::ZeroOrMore,
+                                   cl::cat(StaleCategory));
 
 static cl::opt<bool>
 ForceToDataRelocations("force-data-relocations",
@@ -858,36 +892,19 @@ void RewriteInstance::run() {
 
   processProfileData();
 
-  if(opts::FuncFreqInference){
-    std::unique_ptr<FunctionCallFrequency>  FCF =
-    llvm::make_unique<FunctionCallFrequency>(opts::FuncFreqInference);
-    FCF->runOnFunctions(*BC);
+  if (opts::BoostStaleProfile) {
+    staleProfileBooster();
   }
 
-  if(opts::FreqInference){
-    std::unique_ptr<BlockEdgeFrequency>  BEF =
-    llvm::make_unique<BlockEdgeFrequency>(opts::FreqInference);
-    BEF->runOnFunctions(*BC);
+  if (opts::FreqInference || opts::FuncFreqInference) {
+    genStaticProfile(opts::FreqInference);
   }
-
-  /*
-  if (opts::GenFeatures) {
-    std::unique_ptr<FeatureMiner> FM =
-        llvm::make_unique<FeatureMiner>(opts::GenFeatures);
-    FM->runOnFunctions(*BC);
-    exit(1);
-  }*/
 
   postProcessFunctions();
 
-
   if (opts::GenFeatures) {
-    std::unique_ptr<FeatureMiner> FM =
-        llvm::make_unique<FeatureMiner>(opts::GenFeatures);
-    FM->runOnFunctions(*BC);
-    exit(1);
+    extractFeatures();
   }
-
 
   if (opts::DiffOnly)
     return;
@@ -908,6 +925,74 @@ void RewriteInstance::run() {
 
   // Rewrite allocatable contents and copy non-allocatable parts with mods.
   rewriteFile();
+}
+
+void RewriteInstance::staleProfileBooster() {
+  std::unique_ptr<BlockEdgeFrequency> BEF =
+      llvm::make_unique<BlockEdgeFrequency>(opts::FreqInference);
+  int countStale = 0, countNewStale = 0, countValid = 0, countNewValid = 0;
+
+  auto &BFs = BC->getBinaryFunctions();
+  for (auto &BFI : BFs) {
+
+    BinaryFunction &Function = BFI.second;
+
+    if (!Function.hasProfile() || !Function.isSimple() ||
+        Function.isPLTFunction() || Function.hasUnknownControlFlow() ||
+        Function.empty())
+      continue;
+
+    if (Function.hasValidProfile()) {
+      // has valid profile info
+      countValid += 1;
+      continue;
+    } else {
+      countStale += 1;
+    }
+
+    if (BEF->updateEdges(Function) ||
+        (opts::ProbStaleData && BEF->runOnFunction(Function, true))) {
+      Function.markProfiled(5);
+      countNewValid += 1;
+    } else {
+      if (opts::WuLarusStaleProfile && BEF->runOnFunction(Function, false)) {
+        Function.markProfiled(5);
+        countNewValid += 1;
+      } else {
+        Function.setExecutionCount(0);
+        Function.unsetProfileMatchRatio();
+        countNewStale += 1;
+      }
+    }
+  }
+
+  outs() << "BOLT-INFO: number of functions with STALE profile " << countStale
+         << "\n";
+  outs() << "BOLT-INFO: number of functions with VALID profile  " << countValid
+         << "\n";
+  outs() << "BOLT-INFO: NEW number of functions with STALE profile"
+         << countNewStale << "\n";
+  outs() << "BOLT-INFO: NEW number of functions with VALID profile "
+         << (countNewValid + countValid) << "\n";
+}
+
+void RewriteInstance::genStaticProfile(bool intraprocedural) {
+  if (intraprocedural) { // intra-procedural inference
+    std::unique_ptr<BlockEdgeFrequency> BEF =
+        llvm::make_unique<BlockEdgeFrequency>(opts::FreqInference);
+    BEF->runOnFunctions(*BC);
+  } else { // inter-procedural inference
+    std::unique_ptr<FunctionCallFrequency> FCF =
+        llvm::make_unique<FunctionCallFrequency>(opts::FuncFreqInference);
+    FCF->runOnFunctions(*BC);
+  }
+}
+
+void RewriteInstance::extractFeatures() {
+  std::unique_ptr<FeatureMiner> FM =
+      llvm::make_unique<FeatureMiner>(opts::GenFeatures);
+  FM->runOnFunctions(*BC);
+  exit(EXIT_SUCCESS);
 }
 
 void RewriteInstance::discoverFileObjects() {

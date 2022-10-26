@@ -158,6 +158,18 @@ private:
 
   void buildFunctionsCFG();
 
+  /// Extracts features that are associeted with a conditional branch
+  /// to be used for ml static branch prediction based or the 
+  /// feature based stale profile enhancer tool.
+  void extractFeatures();
+
+  /// Empowers BOLT with the hability to improve stale profile matching.
+  void staleProfileBooster();
+  
+  /// Generate static profile based on simple crafted heuristics or to
+  /// VESPA's ml model.
+  void genStaticProfile(bool intraprocedural) ;
+
   void postProcessFunctions();
 
   /// Run optimizations that operate at the binary, or post-linker, level.
