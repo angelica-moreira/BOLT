@@ -46,6 +46,7 @@ cl::OptionCategory BoltRelocCategory("BOLT options in relocation mode");
 cl::OptionCategory BoltOutputCategory("Output options");
 cl::OptionCategory AggregatorCategory("Data aggregation options");
 cl::OptionCategory InferenceCategory("BOLT static infered profile options");
+cl::OptionCategory StaleCategory("BOLT stale profile boster options");
 cl::OptionCategory BoltInstrCategory("BOLT instrumentation options");
 
 static cl::OptionCategory *BoltCategories[] = {&BoltCategory,
@@ -53,7 +54,8 @@ static cl::OptionCategory *BoltCategories[] = {&BoltCategory,
                                                &BoltRelocCategory,
                                                &BoltInstrCategory,
                                                &BoltOutputCategory,
-                                               &InferenceCategory};
+                                               &InferenceCategory,
+                                               &StaleCategory};
 
 static cl::OptionCategory *BoltDiffCategories[] = {&BoltDiffCategory};
 
