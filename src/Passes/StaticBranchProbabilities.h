@@ -39,6 +39,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <set>
 
 namespace llvm {
 namespace bolt {
@@ -198,6 +199,19 @@ public:
   /// END
   void parseProbabilitiesFile(std::unique_ptr<MemoryBuffer> MemBuf,
                               BinaryContext &BC);
+
+  /// parseBeetleProfileFile - Coordinate reading and parsing of matched
+  /// stale profile file.
+  ///
+  ///
+  /// The stale profile file has .sdata extension and contains two-way branch
+  /// real frequencies. BOLT will consume the real frequencies collected by
+  /// perf. File format follows the pdata format explained previously.
+  // bool parseBeetleProfileFile(std::unique_ptr<MemoryBuffer> MemBuf,
+  //                             BinaryContext &BC, BinaryFunction &RootFunction);
+  void parseBeetleProfileFile(std::unique_ptr<MemoryBuffer> MemBuf, 
+                              BinaryContext &BC, 
+                              std::set<uint64_t> &StaleFunctionsAddresses);
 };
 
 } // namespace bolt

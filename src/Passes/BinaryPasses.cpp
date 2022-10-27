@@ -396,8 +396,8 @@ auto ParsingBuf = MemBuf.get()->getBuffer();
     if (Type.first.equals("FUNCTION")) {
       BasicBlockOffsets.clear();
       auto FunLine = Type.second.split(" ");
-      //the first is the function name
-      //the second is the address
+      //the first substring is the function name
+      //the second substring is the address
       StringRef NumStr = FunLine.second;
       uint64_t FunctionAddress;
       if (NumStr.getAsInteger(16, FunctionAddress)) {
@@ -495,7 +495,6 @@ void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
     Printer.close();
   }
 
-
   if(opts::CompareExternalEditDistance){
     outs() << "BOLT-INFO: Loading the file DiffEditDistance.txt\n";
     const Twine &FileName = "DiffEditDistance.txt";
@@ -508,25 +507,6 @@ void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
     parseEditDistanceFile(std::move(MB.get()),BC);
   }
 
-  /*
-   auto &BFs2 = BC.getBinaryFunctions();
-    for (auto It = BFs2.begin(); It != BFs2.end(); ++It) {
-     auto &Function = It->second;
-
-     for (auto &BB : Function) {
-      for (auto &Inst : BB) {
-        if (BC.MIB->isConditionalBranch(Inst)) {
-          errs() << '\n';
-          Inst.dump_pretty(errs(), BC.InstPrinter.get());
-          const auto Offset = BC.MIB->getAnnotationWithDefault<uint32_t>(Inst, "Offset");
-          BC.printInstruction(errs(), Inst, Offset, &Function);
-          errs() << '\n';
-        }
-      }
-    }
-   }
-*/
-
   if(opts::FunStatsInfo){
    auto &BFs = BC.getBinaryFunctions();
    outs() << "Num_Functions: " << BFs.size() << "\n";
@@ -534,42 +514,39 @@ void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
    unsigned NumIndirectBranches{0};
    uint64_t IndexFun{1};
    uint64_t TotalNumBBProgram{0};
-   //uint64_t TotalNumBBBoltedFunctions{0};
+   uint64_t TotalNumBBBoltedFunctions{0};
    uint64_t TotalNumFunctionsProgram=BFs.size();
-   //uint64_t TotalNumBoltedFunctions{0};
+   uint64_t TotalNumBoltedFunctions{0};
    uint64_t TotalProgramInstructions{0};
 
    for (auto It = BFs.begin(); It != BFs.end(); ++It) {
      auto &Function = It->second;
      
-     /*if(Function.hasLayoutChanged()){
-	TotalNumBoltedFunctions+=1;
-	TotalNumBBBoltedFunctions+=Function.size();
-     }*/
+    if(Function.hasLayoutChanged()){
+	    TotalNumBoltedFunctions+=1;
+	    TotalNumBBBoltedFunctions+=Function.size();
+     }
      TotalNumBBProgram+=Function.size();
      TotalProgramInstructions+=Function.getInstructionCount();
    }
 
-   //double RelativeTotalNumBoltedFunctions = static_cast<double>(TotalNumBoltedFunctions)/static_cast<double>(TotalNumFunctionsProgram);
-   //double RelativeTotalNumBBBolted = static_cast<double>(TotalNumBBBoltedFunctions)/static_cast<double>(TotalNumBBProgram);
+   double RelativeTotalNumBoltedFunctions = static_cast<double>(TotalNumBoltedFunctions)/static_cast<double>(TotalNumFunctionsProgram);
+   double RelativeTotalNumBBBolted = static_cast<double>(TotalNumBBBoltedFunctions)/static_cast<double>(TotalNumBBProgram);
 
    if(BFs.size() > 0){
-    /* outs()<<"Index,Score,Num_Blocks,Num_Instructions,Fun_Name,Edit_Distance," 
-	   <<"Relative_Edit_Distance,Weighted_Relative_Edit_Distance,Num_Indirect_Branches,Num_Jump_Tables," 
-	   <<"Has_Jump_Table,Total_Num_Functions_Program,Total_Num_BB_Program," 
-	   <<"Total_Num_Bolted_Functions_Program,Total_Num_BB_Bolted_Functions_Program,"
-	   <<"Relative_Total_Num_Bolted_Functions_Program,Relative_Total_Num_BB_Bolted_Program\n";
-   */
       if(opts::CompareExternalEditDistance){
        outs()<<"Index,Score,Num_Blocks,Num_Instructions,Fun_Name,Edit_Distance,"
              <<"Diff_Edit_Distance,Num_Indirect_Branches,Num_Jump_Tables,"
-             <<"Has_Jump_Table,Total_Program_Functions,Total_Program_BB,"
+             <<"Has_Jump_Table,Total_Num_Functions_Program,Total_Num_BB_Program,"
              <<"Total_Program_Instructions,Function_Size\n";
       }else{
         outs()<<"Index,Score,Num_Blocks,Num_Instructions,Fun_Name,Edit_Distance,"
+             <<"Relative_Edit_Distance,Weighted_Relative_Edit_Distance," 
              <<"Num_Indirect_Branches,Num_Jump_Tables,"
-             <<"Has_Jump_Table,Total_Program_Functions,Total_Program_BB,"
-             <<"Total_Program_Instructions,Function_Size\n";       
+             <<"Has_Jump_Table,Total_Num_Functions_Program,Total_Num_BB_Program,"
+             <<"Total_Program_Instructions,Function_Size"
+            <<"Total_Num_Bolted_Functions_Program,Total_Num_BB_Bolted_Functions_Program,"
+	          <<"Relative_Total_Num_Bolted_Functions_Program,Relative_Total_Num_BB_Bolted_Program\n";     
       }
    }
    for (auto It = BFs.begin(); It != BFs.end(); ++It) {
@@ -577,12 +554,6 @@ void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
 
      if(!Function.hasLayoutChanged())
        continue;
-
-    // uint64_t EditDistance = Function.getEditDistance();
-     //uint64_t FunctionInstructionCount = Function.getInstructionCount();
-    // uint64_t FunSize = Function.size();
-    // double RelativeEditDistance = static_cast<double>(EditDistance)/static_cast<double>(FunSize);
-    // double WeightedRelativeEditDistance = RelativeEditDistance/static_cast<double>(FunctionInstructionCount);
 
     for (auto &BB1 : Function) {
      for (auto &Inst1 : BB1) {
@@ -608,25 +579,30 @@ void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
             << TotalProgramInstructions <<","
             << Function.getSize() << "\n";
      }else{
+      uint64_t EditDistance = Function.getEditDistance();
+      uint64_t FunctionInstructionCount = Function.getInstructionCount();
+      uint64_t FunSize = Function.size();
+      double RelativeEditDistance = static_cast<double>(EditDistance)/static_cast<double>(FunSize);
+      double WeightedRelativeEditDistance = RelativeEditDistance/static_cast<double>(FunctionInstructionCount);
       outs()<< IndexFun << ","
             << Function.getFunctionScore() << ","
-            << Function.size() << ","
-            << Function.getInstructionCount() << ","
+            << FunSize << ","
+            << FunctionInstructionCount << ","
             << Function.getPrintName() << ","
-            << Function.getEditDistance() << ","
-            //<< RelativeEditDistance << ","
-            //<< WeightedRelativeEditDistance << ","
+            << EditDistance << ","
+            << RelativeEditDistance << ","
+            << WeightedRelativeEditDistance << ","
             << NumIndirectBranches << ","
             << Function.getNumJumpTables()<< ","
             << (Function.hasJumpTables()? "yes": "no") << ","
             << TotalNumFunctionsProgram << ","
             << TotalNumBBProgram<< ","
             << TotalProgramInstructions <<","
-            << Function.getSize() << "\n";
-            //<< TotalNumBoltedFunctions<< ","
-            //<< TotalNumBBBoltedFunctions<<  ",";
-            //<< RelativeTotalNumBoltedFunctions <<  ","
-            //<< RelativeTotalNumBBBolted<<"\n";
+            << Function.getSize() << ","
+            << TotalNumBoltedFunctions<< ","
+            << TotalNumBBBoltedFunctions<<  ","
+            << RelativeTotalNumBoltedFunctions <<  ","
+            << RelativeTotalNumBBBolted<<"\n";
      }
      ++IndexFun;
    }

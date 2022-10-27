@@ -47,6 +47,7 @@
 #include <map>
 #include <memory>
 #include <vector>
+#include <set>
 
 namespace llvm {
 namespace bolt {
@@ -140,9 +141,16 @@ private:
 
   uint64_t getBBExecutionCount(BinaryBasicBlock &BB);
 
+  void updateStaleEdgesFrequencies(BinaryContext &BC, std::set<uint64_t> &StaleFunctionsAddresses);
+
 public:
   explicit BlockEdgeFrequency(const cl::opt<bool> &PrintPass)
       : BinaryFunctionPass(PrintPass) {
+    BSI = std::make_unique<StaticBranchInfo>();
+    SBP = std::make_unique<StaticBranchProbabilities>();
+  }
+
+  explicit BlockEdgeFrequency() : BinaryFunctionPass(true) {
     BSI = std::make_unique<StaticBranchInfo>();
     SBP = std::make_unique<StaticBranchProbabilities>();
   }
@@ -174,6 +182,8 @@ public:
   const char *getName() const override { return "local-frequency-inference"; }
 
   void runOnFunctions(BinaryContext &BC) override;
+
+  void runOnStaleFunctions(BinaryContext &BC, std::set<uint64_t> &StaleFunctionsAddresses);
 };
 
 } // namespace bolt

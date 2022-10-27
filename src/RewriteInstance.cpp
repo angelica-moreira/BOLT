@@ -76,6 +76,7 @@
 #include <stack>
 #include <system_error>
 #include <thread>
+#include <set>
 
 #undef  DEBUG_TYPE
 #define DEBUG_TYPE "bolt"
@@ -896,6 +897,30 @@ void RewriteInstance::run() {
     staleProfileBooster();
   }
 
+  int CountStale = 0, CountValid = 0;
+  auto &BFs = BC->getBinaryFunctions();
+  for (auto &BFI : BFs) {
+
+    BinaryFunction &Function = BFI.second;
+
+    if (!Function.hasProfile() || !Function.isSimple() ||
+        Function.isPLTFunction() || Function.hasUnknownControlFlow() ||
+        Function.empty())
+      continue;
+
+    if (Function.hasValidProfile()) {
+      // has valid profile info
+      CountValid += 1;
+      continue;
+    } else {
+      CountStale += 1;
+    }
+  }
+  outs() << "BOLT-INFO: number of functions with STALE profile " << CountStale
+         << "\n";
+  outs() << "BOLT-INFO: number of functions with VALID profile " << CountValid
+         << "\n";
+
   if (opts::FreqInference || opts::FuncFreqInference) {
     genStaticProfile(opts::FreqInference);
   }
@@ -928,9 +953,12 @@ void RewriteInstance::run() {
 }
 
 void RewriteInstance::staleProfileBooster() {
+  NamedRegionTimer T("staleProfBooster", "run beetle", "beetle",
+                     "Improve stale profile", opts::TimeBuild);
   std::unique_ptr<BlockEdgeFrequency> BEF =
       llvm::make_unique<BlockEdgeFrequency>(opts::FreqInference);
-  int countStale = 0, countNewStale = 0, countValid = 0, countNewValid = 0;
+  int CountStale = 0, CountNewStale = 0, CountValid = 0, CountNewValid = 0;
+  std::set<uint64_t> StaleFunctionsAddresses;
 
   auto &BFs = BC->getBinaryFunctions();
   for (auto &BFI : BFs) {
@@ -944,40 +972,39 @@ void RewriteInstance::staleProfileBooster() {
 
     if (Function.hasValidProfile()) {
       // has valid profile info
-      countValid += 1;
+      CountValid += 1;
       continue;
     } else {
-      countStale += 1;
-    }
-
-    if (BEF->updateEdges(Function) ||
-        (opts::ProbStaleData && BEF->runOnFunction(Function, true))) {
-      Function.markProfiled(5);
-      countNewValid += 1;
-    } else {
-      if (opts::WuLarusStaleProfile && BEF->runOnFunction(Function, false)) {
-        Function.markProfiled(5);
-        countNewValid += 1;
-      } else {
-        Function.setExecutionCount(0);
-        Function.unsetProfileMatchRatio();
-        countNewStale += 1;
-      }
+      CountStale += 1;
+      StaleFunctionsAddresses.insert(Function.getAddress());
     }
   }
 
-  outs() << "BOLT-INFO: number of functions with STALE profile " << countStale
+  if(CountStale > 0){
+    BEF->runOnStaleFunctions(*BC, StaleFunctionsAddresses); // beetle technique
+    CountNewStale = StaleFunctionsAddresses.size();
+    CountNewValid = CountValid + (CountStale - CountNewStale);
+    for(uint64_t FunctionAddress: StaleFunctionsAddresses) {
+      BinaryFunction *Function = BC->getBinaryFunctionAtAddress(FunctionAddress);
+      Function->setExecutionCount(0);
+      Function->unsetProfileMatchRatio();
+    }
+  }
+
+  outs() << "BOLT-INFO: number of functions with STALE profile " << CountStale
          << "\n";
-  outs() << "BOLT-INFO: number of functions with VALID profile  " << countValid
+  outs() << "BOLT-INFO: number of functions with VALID profile  " << CountValid
          << "\n";
   outs() << "BOLT-INFO: NEW number of functions with STALE profile"
-         << countNewStale << "\n";
+         << CountNewStale << "\n";
   outs() << "BOLT-INFO: NEW number of functions with VALID profile "
-         << (countNewValid + countValid) << "\n";
+         << (CountNewValid + CountValid) << "\n";
 }
 
-void RewriteInstance::genStaticProfile(bool intraprocedural) {
-  if (intraprocedural) { // intra-procedural inference
+void RewriteInstance::genStaticProfile(bool Intraprocedural) {
+  NamedRegionTimer T("genStaticProfile", "generate static profile", "staticProf",
+                     "Generate Static Profile for Binary Functions", opts::TimeBuild);
+  if (Intraprocedural) { // intra-procedural inference
     std::unique_ptr<BlockEdgeFrequency> BEF =
         llvm::make_unique<BlockEdgeFrequency>(opts::FreqInference);
     BEF->runOnFunctions(*BC);
@@ -989,6 +1016,8 @@ void RewriteInstance::genStaticProfile(bool intraprocedural) {
 }
 
 void RewriteInstance::extractFeatures() {
+  NamedRegionTimer T("extractFeatures", "extract features", "features",
+                     "Extract Features from Binary Functions", opts::TimeBuild);
   std::unique_ptr<FeatureMiner> FM =
       llvm::make_unique<FeatureMiner>(opts::GenFeatures);
   FM->runOnFunctions(*BC);
@@ -2969,7 +2998,7 @@ void RewriteInstance::disassembleFunctions() {
 }
 
 void RewriteInstance::buildFunctionsCFG() {
-  NamedRegionTimer T("buildCFG", "buildCFG", "buildfuncs",
+  NamedRegionTimer T("buildCFG", "build CFG", "buildfuncs",
                      "Build Binary Functions", opts::TimeBuild);
 
   // Create annotation indices to allow lock-free execution
