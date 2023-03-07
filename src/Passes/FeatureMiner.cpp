@@ -26,7 +26,7 @@ namespace opts {
 
 extern cl::OptionCategory InferenceCategory;
 
-cl::opt<bool> UseDFS(
+cl::opt<bool> VespaUseDFS(
   "vespa-dfs",
   cl::desc("use DFS ordering when using -gen-features option"),
   cl::ReallyHidden,
@@ -166,30 +166,21 @@ void FeatureMiner::addSuccessorInfo(DominatorAnalysis<false> &DA,
   /// the purpose of matching the inferred probabilities with the branches
   /// in the binary.
   SuccBBInfo->FromFunName = Function.getPrintName();
-  // SuccBBInfo->FromBb =  BB.getInputOffset();
+  SuccBBInfo->FromBb =  BB.getInputOffset();
   BinaryFunction *ToFun = Successor->getFunction();
   SuccBBInfo->ToFunName = ToFun->getPrintName();
   SuccBBInfo->ToBb = Successor->getInputOffset();
 
   auto Offset = BC.MIB->tryGetAnnotationAs<uint32_t>(Inst, "Offset");
   if (Offset) {
-    uint32_t temp1 = Successor->getInputOffset();
-    // temp1 = (temp1 != UINT32_MAX) ? temp1 : 0;
-    uint32_t temp2 = Offset.get();
-    // temp2 = (temp2 != UINT32_MAX) ? temp2 : 0;
+    uint32_t TargetOffset = Successor->getInputOffset();
+    uint32_t BranchOffset = Offset.get();
+    BFI->BranchOffset = BranchOffset;
 
-    SuccBBInfo->FromBb = temp2;
-
-    int64_t Delta = -1;
-    if (temp1 != UINT32_MAX && temp2 != UINT32_MAX) {
-      if (temp1 > temp2)
-        Delta = temp1 - temp2;
-      else
-        Delta = temp2 - temp1;
+    if (BranchOffset != UINT32_MAX && TargetOffset != UINT32_MAX) {
+      int64_t Delta = TargetOffset - BranchOffset;
+      BFI->DeltaTaken = std::abs(Delta);
     }
-
-    // int64_t Delta = Successor->getInputOffset() - Offset.get();
-    BFI->DeltaTaken = Delta; // std::abs(Delta);
   }
 
   if (SuccType) {
@@ -222,7 +213,7 @@ void FeatureMiner::extractFeatures(BinaryFunction &Function, BinaryContext &BC,
   const BinaryLoopInfo &LoopsInfo = Function.getLoopInfo();
   bool Simple = Function.isSimple();
 
-  const auto &Order = opts::UseDFS ? Function.dfs() : Function.getLayout();
+  const auto &Order = opts::VespaUseDFS ? Function.dfs() : Function.getLayout();
 
   for (auto *BBA : Order) {
 
@@ -457,6 +448,13 @@ void FeatureMiner::extractFeatures(BinaryFunction &Function, BinaryContext &BC,
       if (!FalseSuccessor && !TrueSuccessor)
         continue;
 
+      int64_t BranchOffset = 
+          (BFI->BranchOffset.hasValue())
+            ? static_cast<int64_t>(*(BFI->BranchOffset))
+            : -1;
+      if(BranchOffset == -1)
+        continue;
+
       int16_t ProcedureType = (BFI->ProcedureType.hasValue())
                                   ? static_cast<int16_t>(*(BFI->ProcedureType))
                                   : -1;
@@ -546,7 +544,9 @@ void FeatureMiner::extractFeatures(BinaryFunction &Function, BinaryContext &BC,
       int64_t Call =
           (BFI->Call.hasValue()) ? static_cast<bool>(*(BFI->Call)) : -1;
 
-      int64_t DeltaTaken = BFI->DeltaTaken;
+      int64_t DeltaTaken = (BFI->DeltaTaken.hasValue())
+                             ? static_cast<int64_t>(*(BFI->DeltaTaken))
+                             : -1;
 
       int64_t NumLoads = (BFI->NumLoads.hasValue())
                              ? static_cast<int64_t>(*(BFI->NumLoads))
@@ -626,11 +626,14 @@ void FeatureMiner::extractFeatures(BinaryFunction &Function, BinaryContext &BC,
       }
       BFI.reset();
 
+      std::string BranchOffsetStr =  (BranchOffset == -1) ? "None" : Twine::utohexstr(BranchOffset).str();
+
       uint64_t fun_exec = Function.getExecutionCount();
       fun_exec = (fun_exec != UINT64_MAX) ? fun_exec : 0;
       Printer << "," << Twine::utohexstr(Function.getAddress()) << ","
               << fun_exec << "," << Function.getFunctionNumber() << ","
               << Function.getOneName() << "," << Function.getPrintName()
+              << "," << BranchOffsetStr
               << "\n";
 
       //========================================================================
@@ -813,7 +816,9 @@ void FeatureMiner::dumpFeatures(raw_ostream &Printer, uint64_t FunctionAddress,
     int64_t Call =
         (BFI->Call.hasValue()) ? static_cast<bool>(*(BFI->Call)) : -1;
 
-    int64_t DeltaTaken = BFI->DeltaTaken;
+    int64_t DeltaTaken = (BFI->DeltaTaken.hasValue())
+                             ? static_cast<int64_t>(*(BFI->DeltaTaken))
+                             : -1;
 
     int64_t NumLoads = (BFI->NumLoads.hasValue())
                            ? static_cast<int64_t>(*(BFI->NumLoads))
@@ -826,6 +831,9 @@ void FeatureMiner::dumpFeatures(raw_ostream &Printer, uint64_t FunctionAddress,
     int64_t BasicBlockSize = (BFI->BasicBlockSize.hasValue())
                                  ? static_cast<int64_t>(*(BFI->BasicBlockSize))
                                  : -1;
+
+    int64_t BranchOffset = (BFI->BranchOffset.hasValue())
+                              ? static_cast<int64_t>(*(BFI->BranchOffset)): -1;
 
     int64_t NumBasicBlocks = (BFI->NumBasicBlocks.hasValue())
                                  ? static_cast<int64_t>(*(BFI->NumBasicBlocks))
@@ -892,7 +900,7 @@ void FeatureMiner::dumpFeatures(raw_ostream &Printer, uint64_t FunctionAddress,
 }
 
 void FeatureMiner::runOnFunctions(BinaryContext &BC) {
-  auto FileName = "features.csv";
+  auto FileName = "features_new.csv";
   outs() << "BOLT-INFO: Starting feature miner pass\n";
 
   std::error_code EC;
@@ -936,7 +944,8 @@ void FeatureMiner::runOnFunctions(BinaryContext &BC) {
              "FS_BASIC_BLOCK_SIZE,FS_NUM_CALLS,FS_NUM_CALLS_EXIT,"
              "FS_NUM_INDIRECT_CALL,FS_NUM_CALLS_INVOKE,FS_NUM_TAIL_CALLS,"
              "FUN_ENTRY_ADDRESS,FUN_ENTRY_FREQUENCY"
-             ",FUN_UNIQUE_NUMBER,FUN_ONE_NAME,FUN_PRINT_NAME\n";
+             ",FUN_UNIQUE_NUMBER,FUN_ONE_NAME,FUN_PRINT_NAME,"
+             "BRANCH_ADDRESS\n";
 
   auto &BFs = BC.getBinaryFunctions();
   SBI = std::make_unique<StaticBranchInfo>();

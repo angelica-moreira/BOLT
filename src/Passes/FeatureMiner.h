@@ -57,6 +57,7 @@ private:
     std::string ToFunName = "UNDEF";
     uint32_t ToBb;
 
+
     Optional<unsigned> NumCallsExit;
     Optional<unsigned> NumCallsInvoke;
     Optional<unsigned> NumIndirectCalls;
@@ -111,12 +112,14 @@ private:
 
     Optional<unsigned> NumBasicBlocks;
 
-    int64_t DeltaTaken = -1;
+    Optional<int64_t> DeltaTaken;
 
     Optional<int32_t> OperandRAType;
     Optional<int32_t> OperandRBType;
 
     Optional<int32_t> BasicBlockSize;
+
+    Optional<int64_t> BranchOffset;
   };
 
   typedef std::unique_ptr<struct BranchFeaturesInfo> BFIPtr;
