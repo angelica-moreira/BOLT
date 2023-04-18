@@ -212,6 +212,10 @@ public:
   void parseBeetleProfileFile(std::unique_ptr<MemoryBuffer> MemBuf, 
                               BinaryContext &BC, 
                               std::set<uint64_t> &StaleFunctionsAddresses);
+
+  void parseProbabilitiesFile(std::unique_ptr<MemoryBuffer> MemBuf, BinaryContext &BC,
+                              std::set<uint64_t> &StaleFunctionsAddresses,
+                              std::set<uint64_t> &MatchedStaleFuncAddresses);
 };
 
 } // namespace bolt

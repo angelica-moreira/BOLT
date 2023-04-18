@@ -139,7 +139,7 @@ void StaticBranchProbabilities::clear() {
 
 void StaticBranchProbabilities::parseProbabilitiesFile(
     std::unique_ptr<MemoryBuffer> MemBuf, BinaryContext &BC) {
-
+  errs() << "BOLT-INFO: Starting passing.\n";
   std::vector<BasicBlockOffset> BasicBlockOffsets;
   auto populateBasicBlockOffsets =
       [&](BinaryFunction &Function,
@@ -210,34 +210,28 @@ void StaticBranchProbabilities::parseProbabilitiesFile(
 
       StringRef SrcBBAddressStr = EdgeLine.first;
       uint64_t SrcBBAddress;
-  
       if (SrcBBAddressStr.getAsInteger(16, SrcBBAddress)) {
         errs() << "BOLT-ERROR: File not in the correct format.\n";
         exit(EXIT_FAILURE);
       }
 
-      auto SrcBB = getBasicBlockAtOffset(SrcBBAddress);
-
       auto EdgeInfo = EdgeLine.second.split(" ");
       StringRef DstBBAddressStr = EdgeInfo.first;
       uint64_t DstBBAddress;
-      
       if (DstBBAddressStr.getAsInteger(16, DstBBAddress)) {
         errs() << "BOLT-ERROR: File not in the correct format.\n";
         exit(EXIT_FAILURE);
       }
 
+      auto SrcBB = getBasicBlockAtOffset(SrcBBAddress);
       auto DstBB = getBasicBlockAtOffset(DstBBAddress);
-
       if (SrcBB && DstBB) {
         uint64_t Prob;
         StringRef ProbStr = EdgeInfo.second;
-
         if (ProbStr.getAsInteger(10, Prob)) {
           errs() << "BOLT-ERROR: File not in the correct format.\n";
           exit(EXIT_FAILURE);
         }
-
         SrcBB->setSuccessorBranchInfo(*DstBB, Prob, 0);
       }
     } else if (Line.equals("END")) {
@@ -249,12 +243,11 @@ void StaticBranchProbabilities::parseProbabilitiesFile(
   }
 }
 
-/*
-bool StaticBranchProbabilities::parseBeetleProfileFile(
+void StaticBranchProbabilities::parseProbabilitiesFile(
     std::unique_ptr<MemoryBuffer> MemBuf, BinaryContext &BC,
-    BinaryFunction &RootFunction) {
+    std::set<uint64_t> &StaleFunctionsAddresses,
+    std::set<uint64_t> &MatchedStaleFuncAddresses) {
 
-  bool found = false;
   std::vector<BasicBlockOffset> BasicBlockOffsets;
   auto populateBasicBlockOffsets =
       [&](BinaryFunction &Function,
@@ -283,10 +276,9 @@ bool StaticBranchProbabilities::parseBeetleProfileFile(
   BinaryFunction *Function = nullptr;
   while (ParsingBuf.size() > 0) {
     auto LineEnd = ParsingBuf.find_first_of("\n");
-
     if (LineEnd == StringRef::npos) {
       errs() << "BOLT-ERROR: File not in the correct format.\n";
-      exit(1);
+      exit(EXIT_FAILURE);
     }
 
     StringRef Line = ParsingBuf.substr(0, LineEnd);
@@ -295,7 +287,7 @@ bool StaticBranchProbabilities::parseBeetleProfileFile(
         !Line.equals("END")) {
       errs() << "BOLT-ERROR: File not in the correct format, found: " << Line
              << "\n";
-      exit(1);
+      exit(EXIT_FAILURE);
     }
 
     if (Type.first.equals("FUNCTION")) {
@@ -307,82 +299,65 @@ bool StaticBranchProbabilities::parseBeetleProfileFile(
       uint64_t FunctionAddress = 0;
       if (NumStr.getAsInteger(16, FunctionAddress)) {
         errs() << "BOLT-ERROR: File not in the correct format.\n";
-        exit(1);
+        exit(EXIT_FAILURE);
       }
 
-      StringRef FunFreqStr = FunLine.second.split(" ").second;
-      uint64_t FunFreq = 0;
-      if (FunFreqStr.getAsInteger(10, FunFreq)) {
-        errs() << "BOLT-ERROR: File not in the correct format.\n";
-        exit(1);
-      }
-
-      if (RootFunction.getAddress() == FunctionAddress) {
-        found = true;
-        Function = &RootFunction;
-        Function->setExecutionCount(FunFreq);
-      } else {
-        ParsingBuf = ParsingBuf.drop_front(LineEnd + 1);
-        continue;
-      }
-      if (Function) {
-        populateBasicBlockOffsets(*Function, BasicBlockOffsets);
-        OriginalFunctionsFrequency[FunctionAddress] = FunFreq;
-      }
+      auto it = StaleFunctionsAddresses.find(FunctionAddress);
+      if (it != StaleFunctionsAddresses.end()) {
+        Function = BC.getBinaryFunctionAtAddress(FunctionAddress);
+        if(Function){
+          Function->clearProfile();
+          Function->setExecutionCount(1);
+          Function->markProfiled(BinaryFunction::PF_STATIC);
+          MatchedStaleFuncAddresses.insert(FunctionAddress);
+          populateBasicBlockOffsets(*Function, BasicBlockOffsets);
+        }
+      } 
     }
 
-    if (!Function) {
+    if (!Function){
       ParsingBuf = ParsingBuf.drop_front(LineEnd + 1);
       continue;
     }
-
+    
     if (Type.first.equals("EDGE")) {
       auto EdgeLine = Type.second.split(" ");
 
       StringRef SrcBBAddressStr = EdgeLine.first;
       uint64_t SrcBBAddress;
-
       if (SrcBBAddressStr.getAsInteger(16, SrcBBAddress)) {
         errs() << "BOLT-ERROR: File not in the correct format.\n";
-        exit(1);
+        exit(EXIT_FAILURE);
       }
-
-      auto SrcBB = getBasicBlockAtOffset(SrcBBAddress);
 
       auto EdgeInfo = EdgeLine.second.split(" ");
       StringRef DstBBAddressStr = EdgeInfo.first;
       uint64_t DstBBAddress;
-
       if (DstBBAddressStr.getAsInteger(16, DstBBAddress)) {
         errs() << "BOLT-ERROR: File not in the correct format.\n";
-        exit(1);
+        exit(EXIT_FAILURE);
       }
 
+      auto SrcBB = getBasicBlockAtOffset(SrcBBAddress);
       auto DstBB = getBasicBlockAtOffset(DstBBAddress);
-
-      if (SrcBB && DstBB) {
+      if (SrcBB && DstBB && SrcBB->isSuccessor(DstBB)) {
         uint64_t Prob;
         StringRef ProbStr = EdgeInfo.second;
-
         if (ProbStr.getAsInteger(10, Prob)) {
           errs() << "BOLT-ERROR: File not in the correct format.\n";
-          exit(1);
+          exit(EXIT_FAILURE);
         }
 
         SrcBB->setSuccessorBranchInfo(*DstBB, Prob, 0);
-        uint64_t newBBFreq = DstBB->getKnownExecutionCount() + Prob;
-        DstBB->setExecutionCount(newBBFreq);
       }
     } else if (Line.equals("END")) {
       BasicBlockOffsets.clear();
     }
-
+    
     ParsingBuf = ParsingBuf.drop_front(LineEnd + 1);
   }
-  return found;
 }
 
-*/
 void StaticBranchProbabilities::parseBeetleProfileFile(
     std::unique_ptr<MemoryBuffer> MemBuf, BinaryContext &BC,
     std::set<uint64_t> &StaleFunctionsAddresses) {
@@ -470,35 +445,33 @@ void StaticBranchProbabilities::parseBeetleProfileFile(
 
       StringRef SrcBBAddressStr = EdgeLine.first;
       uint64_t SrcBBAddress;
-  
       if (SrcBBAddressStr.getAsInteger(16, SrcBBAddress)) {
         errs() << "BOLT-ERROR: File not in the correct format.\n";
         exit(EXIT_FAILURE);
       }
 
-      auto SrcBB = getBasicBlockAtOffset(SrcBBAddress);
-
       auto EdgeInfo = EdgeLine.second.split(" ");
       StringRef DstBBAddressStr = EdgeInfo.first;
       uint64_t DstBBAddress;
-      
       if (DstBBAddressStr.getAsInteger(16, DstBBAddress)) {
         errs() << "BOLT-ERROR: File not in the correct format.\n";
         exit(EXIT_FAILURE);
       }
 
+      auto SrcBB = getBasicBlockAtOffset(SrcBBAddress);
       auto DstBB = getBasicBlockAtOffset(DstBBAddress);
+      if (SrcBB && DstBB && SrcBB->isSuccessor(DstBB)) {
+        uint64_t Freq;
+        StringRef FreqStr = EdgeInfo.second;
 
-      if (SrcBB && DstBB) {
-        uint64_t Prob;
-        StringRef ProbStr = EdgeInfo.second;
-
-        if (ProbStr.getAsInteger(10, Prob)) {
+        if (FreqStr.getAsInteger(10, Freq)) {
           errs() << "BOLT-ERROR: File not in the correct format.\n";
           exit(EXIT_FAILURE);
         }
 
-        SrcBB->setSuccessorBranchInfo(*DstBB, Prob, 0);
+        SrcBB->setSuccessorBranchInfo(*DstBB, Freq, 0);
+        uint64_t newBBFreq = DstBB->getKnownExecutionCount() + Freq;
+        DstBB->setExecutionCount(newBBFreq);
       }
     } else if (Line.equals("END")) {
       BasicBlockOffsets.clear();
