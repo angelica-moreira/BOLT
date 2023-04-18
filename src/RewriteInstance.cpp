@@ -108,6 +108,7 @@ extern cl::opt<JumpTableSupportLevel> JumpTables;
 extern cl::list<std::string> ReorderData;
 extern cl::opt<bolt::ReorderFunctions::ReorderType> ReorderFunctions;
 extern cl::opt<bool> TimeBuild;
+extern cl::opt<bool> Bmat;
 
 cl::opt<unsigned>
 AlignText("align-text",
@@ -897,29 +898,39 @@ void RewriteInstance::run() {
     staleProfileBooster();
   }
 
-  int CountStale = 0, CountValid = 0;
-  auto &BFs = BC->getBinaryFunctions();
-  for (auto &BFI : BFs) {
-
-    BinaryFunction &Function = BFI.second;
-
-    if (!Function.hasProfile() || !Function.isSimple() ||
-        Function.isPLTFunction() || Function.hasUnknownControlFlow() ||
-        Function.empty())
-      continue;
-
-    if (Function.hasValidProfile()) {
-      // has valid profile info
-      CountValid += 1;
-      continue;
-    } else {
-      CountStale += 1;
+  if (opts::Bmat) {
+    if (opts::WuLarusStaleProfile) {
+      std::unique_ptr<BlockEdgeFrequency> BEF =
+          llvm::make_unique<BlockEdgeFrequency>(opts::WuLarusStaleProfile);
+      BEF->updateStaleEdgesFrequencies(*BC);
     }
   }
-  outs() << "BOLT-INFO: number of functions with STALE profile " << CountStale
-         << "\n";
-  outs() << "BOLT-INFO: number of functions with VALID profile " << CountValid
-         << "\n";
+
+  if(!opts::BoostStaleProfile){
+    int CountStale = 0, CountValid = 0;
+    auto &BFs = BC->getBinaryFunctions();
+    for (auto &BFI : BFs) {
+
+      BinaryFunction &Function = BFI.second;
+
+      if (!Function.hasProfile() || !Function.isSimple() ||
+          Function.isPLTFunction() || Function.hasUnknownControlFlow() ||
+          Function.empty())
+        continue;
+
+      if (Function.hasValidProfile()) {
+        // has valid profile info
+        CountValid += 1;
+        continue;
+      } else {
+        CountStale += 1;
+      }
+    }
+    outs() << "BOLT-INFO: number of functions with STALE profile " << CountStale
+          << "\n";
+    outs() << "BOLT-INFO: number of functions with VALID profile " << CountValid
+          << "\n";
+  }
 
   if (opts::FreqInference || opts::FuncFreqInference) {
     genStaticProfile(opts::FreqInference);
@@ -966,7 +977,7 @@ void RewriteInstance::staleProfileBooster() {
     BinaryFunction &Function = BFI.second;
 
     if (!Function.hasProfile() || !Function.isSimple() ||
-        Function.isPLTFunction() || Function.hasUnknownControlFlow() ||
+         Function.isPLTFunction() || Function.hasUnknownControlFlow() ||
         Function.empty())
       continue;
 
@@ -977,6 +988,7 @@ void RewriteInstance::staleProfileBooster() {
     } else {
       CountStale += 1;
       StaleFunctionsAddresses.insert(Function.getAddress());
+      Function.setExecutionCount(0);
     }
   }
 
@@ -995,10 +1007,10 @@ void RewriteInstance::staleProfileBooster() {
          << "\n";
   outs() << "BOLT-INFO: number of functions with VALID profile  " << CountValid
          << "\n";
-  outs() << "BOLT-INFO: NEW number of functions with STALE profile"
+  outs() << "BOLT-INFO: NEW number of functions with STALE profile "
          << CountNewStale << "\n";
   outs() << "BOLT-INFO: NEW number of functions with VALID profile "
-         << (CountNewValid + CountValid) << "\n";
+         << CountNewValid << "\n";
 }
 
 void RewriteInstance::genStaticProfile(bool Intraprocedural) {
