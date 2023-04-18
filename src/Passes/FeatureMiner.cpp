@@ -29,6 +29,15 @@ extern cl::OptionCategory InferenceCategory;
 cl::opt<bool> VespaUseDFS(
   "vespa-dfs",
   cl::desc("use DFS ordering when using -gen-features option"),
+  cl::init(false),
+  cl::ReallyHidden,
+  cl::ZeroOrMore,
+  cl::cat(InferenceCategory));
+
+cl::opt<bool> IncludeValidProfile(
+  "beetle-valid-profile-info",
+  cl::desc("include valid profile information."),
+  cl::init(false),
   cl::ReallyHidden,
   cl::ZeroOrMore,
   cl::cat(InferenceCategory));
@@ -176,7 +185,6 @@ void FeatureMiner::addSuccessorInfo(DominatorAnalysis<false> &DA,
     uint32_t TargetOffset = Successor->getInputOffset();
     uint32_t BranchOffset = Offset.get();
     BFI->BranchOffset = BranchOffset;
-
     if (BranchOffset != UINT32_MAX && TargetOffset != UINT32_MAX) {
       int64_t Delta = TargetOffset - BranchOffset;
       BFI->DeltaTaken = std::abs(Delta);
@@ -952,7 +960,7 @@ void FeatureMiner::runOnFunctions(BinaryContext &BC) {
   for (auto &BFI : BFs) {
     BinaryFunction &Function = BFI.second;
 
-    if (Function.empty() || Function.hasValidProfile())
+    if (Function.empty() || (Function.hasValidProfile() && opts::IncludeValidProfile))
       continue;
 
     if (!Function.isLoopFree()) {
