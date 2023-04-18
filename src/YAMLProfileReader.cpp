@@ -34,7 +34,7 @@ IgnoreHash("profile-ignore-hash",
 
 
 
-static llvm::cl::opt<bool>
+llvm::cl::opt<bool>
 Bmat("bmat",
   cl::desc("use bmat strategy"),
   cl::init(false),
