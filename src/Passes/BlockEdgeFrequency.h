@@ -135,7 +135,7 @@ private:
   /// computeFrequencies - Computes intraprocedural block and intraprocedural
   /// flow edge frequencies with the frequencies based on the local block and
   /// edge frequency algorithm described in page 5 of the Wu Larus paper.
-  bool computeFrequencies(BinaryFunction &Function);
+  bool computeFrequencies(BinaryFunction &Function, bool precision);
 
   void dumpProfileData(BinaryFunction &Function, raw_ostream &Printer);
 
@@ -182,6 +182,8 @@ public:
   const char *getName() const override { return "local-frequency-inference"; }
 
   void runOnFunctions(BinaryContext &BC) override;
+  void updateStaleEdgesFrequencies(BinaryContext &BC);
+  void runOnStaleFunctions(BinaryContext &BC);
 
   void runOnStaleFunctions(BinaryContext &BC, std::set<uint64_t> &StaleFunctionsAddresses);
 };

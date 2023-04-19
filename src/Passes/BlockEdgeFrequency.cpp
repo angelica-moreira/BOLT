@@ -18,6 +18,8 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Options.h"
+#include "llvm/Support/Timer.h"
+
 #include <string>
 #include <cfloat>
 
@@ -36,6 +38,7 @@ extern cl::OptionCategory StaleCategory;
 extern cl::opt<bool> MLBased;
 extern cl::opt<bool> WuLarusStaleProfile;
 extern cl::opt<bool> VespaStaleProfile;
+extern cl::opt<bool> TimeBuild;
 
 
 extern cl::opt<bolt::StaticBranchProbabilities::HeuristicType> HeuristicBased;
@@ -57,6 +60,14 @@ cl::opt<bool> BeetleBased(
    cl::desc("reads frequencies based on Beetle technique."),
    cl::ZeroOrMore, 
    cl::Hidden, 
+   cl::cat(StaleCategory));
+
+cl::opt<bool> DisableBeetle(
+  "disable-beetle",
+   cl::desc("disable Beetle technique."),
+   cl::ZeroOrMore, 
+   cl::Hidden, 
+   cl::init(false),
    cl::cat(StaleCategory));
 
 } // namespace opts
@@ -502,17 +513,17 @@ void BlockEdgeFrequency::clear() {
   CFGEdgeFrequencies.clear();
 }
 
-bool BlockEdgeFrequency::computeFrequencies(BinaryFunction &Function) {
+bool BlockEdgeFrequency::computeFrequencies(BinaryFunction &Function, bool precision = true) {
   computeBlockEdgeFrequencies(Function);
   // Checks if the computed frequencies are within the precision
   // boundary.
-  bool Holds = checkPrecision(Function);
+  bool Holds = (precision) ? checkPrecision(Function): true;
   if (Holds) {
     updateLocalCallFrequencies(Function);
     Function.markProfiled(BinaryFunction::PF_STATIC);
     Function.setExecutionCount(SCALING_FACTOR);
   } else {
-    Function.setExecutionCount(BinaryFunction::COUNT_NO_PROFILE);
+    Function.setExecutionCount(0);
     Function.clearProfile();
     Function.unsetProfileMatchRatio();
     DEBUG(dbgs() << "BOLT-DEBUG: The local block and flow edge frequencies\n"
@@ -529,10 +540,181 @@ bool BlockEdgeFrequency::computeFrequencies(BinaryFunction &Function) {
   return Holds;
 }
 
+void BlockEdgeFrequency::updateStaleEdgesFrequencies(BinaryContext &BC) {
+  outs() << "BOLT-INFO: based on probabilities infered by heuristics.\n";
+  uint64_t Unchecked = 0;
+  uint64_t Checked = 0;
+  uint64_t test = 0;
+  auto &BFs = BC.getBinaryFunctions();
+  for (auto &BFI : BFs) {
+
+    BinaryFunction &Function = BFI.second;
+    if (Function.hasValidProfile() || Function.empty() || 
+       !Function.isSimple() || Function.hasUnknownControlFlow() ||
+       Function.isPLTFunction())  
+
+      continue;
+
+    BinaryBasicBlock &EntryBB = (*Function.begin());
+    if (!Function.hasProfile()) {
+      Function.setExecutionCount(SCALING_FACTOR);
+      EntryBB.setExecutionCount(SCALING_FACTOR);
+    }
+
+    if (opts::WuLarusStaleProfile){
+      Function.clearProfile();
+      SBP->computeHeuristicBasedProbabilities(Function);
+    } 
+
+    Function.setExecutionCount(SCALING_FACTOR);
+    if(computeFrequencies(Function)){
+     Function.markProfiled(BinaryFunction::PF_STATIC);
+     Checked++;
+    } else {
+      Unchecked++;
+    }
+    clear();
+  }
+
+  outs() << "================ Checked: "<<Checked<<"\n";
+  outs() << "================ Unchecked: "<<Unchecked<<"\n";
+
+  outs() << "BOLT-INFO: the BB counts and local Edge counts where updated"
+         << " based on intraprodecural inference.\n";  
+  
+}
+
 void BlockEdgeFrequency::updateStaleEdgesFrequencies(BinaryContext &BC, 
                          std::set<uint64_t> &StaleFunctionsAddresses) {
 
+  NamedRegionTimer T("updateStaleEdges", "gen static profile", "beetle",
+                     "Improve stale profile", opts::TimeBuild);
+
   outs() << "BOLT-INFO: starting block and flow edge frequency inference pass\n";
+  outs() << "BOLT-INFO: computing local static infered frequencies\n";
+
+  auto &BFs = BC.getBinaryFunctions();
+  for (auto &BFI : BFs) {
+
+    BinaryFunction &Function = BFI.second;
+
+    if (Function.empty() || 
+        (StaleFunctionsAddresses.find(Function.getAddress()) == StaleFunctionsAddresses.end()))
+      continue;
+
+    Function.setExecutionCount(0);
+    Function.clearProfile();
+  }
+  std::set<uint64_t> MatchedStaleFuncAddresses;
+  if (!opts::MLBased) {
+    outs() << "BOLT-INFO: based on probabilities infered by heuristics.\n";
+  } else {
+    outs() << "BOLT-INFO: based on probabilities infered by a ML model.\n";
+    outs() << "BOLT-INFO: processing the file " << opts::ProbFilename << "\n";
+
+    auto MB = MemoryBuffer::getFileOrSTDIN(opts::ProbFilename);
+
+    if (auto EC = MB.getError()) {
+      errs() << "BOLT-ERROR: Cannot open " << opts::ProbFilename << ": "
+             << EC.message() << "\n";
+      return;
+    }
+
+    SBP->parseProbabilitiesFile(std::move(MB.get()), BC, StaleFunctionsAddresses, MatchedStaleFuncAddresses);
+  }
+
+  uint64_t Unchecked = 0;
+  uint64_t Checked = 0;
+  uint64_t test = 0;
+  for (auto &BFI : BFs) {
+
+    BinaryFunction &Function = BFI.second;
+    auto it = StaleFunctionsAddresses.find(Function.getAddress());
+    if (Function.empty() || !Function.isSimple() ||
+       (Function.getExecutionCount()!=1 && opts::MLBased) || 
+       Function.hasUnknownControlFlow() ||
+       Function.isPLTFunction() ||
+        (it == StaleFunctionsAddresses.end()))  
+
+      continue;
+
+    auto it2 = MatchedStaleFuncAddresses.find(Function.getAddress());
+    if (opts::MLBased && it2 == MatchedStaleFuncAddresses.end()){
+       continue;
+    }
+    
+
+    BinaryBasicBlock &EntryBB = (*Function.begin());
+    if (!Function.hasProfile()) {
+      if (opts::MLBased && Function.size() != 1) {
+        Function.setExecutionCount(0);
+        Function.clearProfile();
+        Function.unsetProfileMatchRatio();
+        continue;
+      }
+
+      Function.setExecutionCount(SCALING_FACTOR);
+      EntryBB.setExecutionCount(SCALING_FACTOR);
+    }
+
+    if (opts::WuLarusStaleProfile){
+      Function.clearProfile();
+      SBP->computeHeuristicBasedProbabilities(Function);
+    } else
+      SBP->computeProbabilities(Function);
+
+    Function.setExecutionCount(SCALING_FACTOR);
+    if(computeFrequencies(Function)){
+     StaleFunctionsAddresses.erase(it);
+     Function.markProfiled(BinaryFunction::PF_STATIC);
+     Checked++;
+    } else {
+      Unchecked++;
+    }
+    clear();
+  }
+
+  outs() << "BOLT-INFO: Number of functions that CHECKS: "<<Checked<<"\n";
+  outs() << "BOLT-INFO: Number of UNCHECKED functions: "<<Unchecked<<"\n";
+
+  outs() << "BOLT-INFO: the BB counts and local Edge counts where updated"
+         << " based on intraprodecural inference.\n";
+}
+
+void BlockEdgeFrequency::runOnStaleFunctions(BinaryContext &BC, 
+                        std::set<uint64_t> &StaleFunctionsAddresses) {
+  bool numValidProfile = 0;
+  outs() << "BOLT-INFO: starting block and flow edge frequency inference pass\n";
+  outs() << "BOLT-INFO: computing local static infered frequencies\n";  
+
+  if(!opts::DisableBeetle){
+    outs() << "BOLT-INFO: based on frequencies gathered by beetle technique.\n";
+    outs() << "BOLT-INFO: processing the file " << opts::BeetleFilename << "\n";
+
+    auto MB = MemoryBuffer::getFileOrSTDIN(opts::BeetleFilename);
+
+    if (auto EC = MB.getError()) {
+      errs() << "BOLT-ERROR: Cannot open " << opts::BeetleFilename << ": "
+              << EC.message() << "\n";
+      exit(EXIT_FAILURE);
+    }
+
+    SBP->parseBeetleProfileFile(std::move(MB.get()), BC, StaleFunctionsAddresses);
+  }
+
+  outs() << "BOLT-INFO: the BB counts and local Edge counts where updated"
+         << " based on beetle approach.\n";
+
+  if((opts::WuLarusStaleProfile || opts::VespaStaleProfile) &&
+        StaleFunctionsAddresses.size() > 0 ) {
+      opts::MLBased = (opts::VespaStaleProfile) ? true: false;
+      updateStaleEdgesFrequencies(BC, StaleFunctionsAddresses);
+  }
+}
+
+void BlockEdgeFrequency::runOnStaleFunctions(BinaryContext &BC) {
+  outs()
+      << "BOLT-INFO: starting block and flow edge frequency inference pass\n";
   outs() << "BOLT-INFO: computing local static infered frequencies\n";
 
   if (!opts::MLBased) {
@@ -552,6 +734,19 @@ void BlockEdgeFrequency::updateStaleEdgesFrequencies(BinaryContext &BC,
     SBP->parseProbabilitiesFile(std::move(MB.get()), BC);
   }
 
+  const char *FileName = "localFrequencies.fdata";
+
+  DEBUG(
+    dbgs() << "BOLT-DEBUG: dumping local static infered frequencies to "
+               << FileName << "\n";
+        std::error_code EC;
+        raw_fd_ostream Printer(FileName, EC, sys::fs::F_None); if (EC) {
+          dbgs() << "BOLT-ERROR: " << EC.message() << ", unable to open "
+                 << FileName << " for output.\n";
+          return;
+        }
+        );
+
   uint64_t Unchecked = 0;
   uint64_t Checked = 0;
   auto &BFs = BC.getBinaryFunctions();
@@ -559,8 +754,9 @@ void BlockEdgeFrequency::updateStaleEdgesFrequencies(BinaryContext &BC,
 
     BinaryFunction &Function = BFI.second;
 
-    if (Function.empty() || (Function.getExecutionCount()!=1 && opts::MLBased) || 
-        (StaleFunctionsAddresses.find(Function.getAddress()) == StaleFunctionsAddresses.end()))
+    if (Function.hasValidProfile() || !Function.isSimple() ||
+        Function.isPLTFunction() || Function.hasUnknownControlFlow() ||
+        Function.empty() || (Function.getExecutionCount()!=1 && opts::MLBased))
       continue;
 
     for (auto &B : Function) {
@@ -570,15 +766,17 @@ void BlockEdgeFrequency::updateStaleEdgesFrequencies(BinaryContext &BC,
   for (auto &BFI : BFs) {
 
     BinaryFunction &Function = BFI.second;
-    auto it = StaleFunctionsAddresses.find(Function.getAddress());
-    if (Function.empty() || (Function.getExecutionCount()!=1 && opts::MLBased) || 
-        (it == StaleFunctionsAddresses.end()))
+    if (Function.hasValidProfile() || !Function.isSimple() ||
+        Function.isPLTFunction() || Function.hasUnknownControlFlow() ||
+        Function.empty() || (Function.getExecutionCount()!=1 && opts::MLBased))
       continue;
 
     BinaryBasicBlock &EntryBB = (*Function.begin());
     if (!Function.hasProfile()) {
       if (opts::MLBased && Function.size() != 1) {
-        Function.setExecutionCount(BinaryFunction::COUNT_NO_PROFILE);
+        Function.setExecutionCount(0);
+        Function.clearProfile();
+        Function.unsetProfileMatchRatio();
         continue;
       }
 
@@ -586,49 +784,43 @@ void BlockEdgeFrequency::updateStaleEdgesFrequencies(BinaryContext &BC,
       EntryBB.setExecutionCount(SCALING_FACTOR);
     }
 
-    if (opts::WuLarusStaleProfile)
+    if (opts::HeuristicBased == bolt::StaticBranchProbabilities::H_WU_LARUS)
       SBP->computeHeuristicBasedProbabilities(Function);
     else 
       SBP->computeProbabilities(Function);
 
     Function.setExecutionCount(SCALING_FACTOR);
-    if(computeFrequencies(Function))
-     StaleFunctionsAddresses.erase(it);
+    bool Holds = computeFrequencies(Function);
+    if (Holds) {
+      ++Checked;
+
+      DEBUG(
+        std::error_code EC;
+            raw_fd_ostream Printer(FileName, EC, sys::fs::F_Append); if (EC) {
+              dbgs() << "BOLT-WARNING: " << EC.message() << ", unable to open"
+                     << " " << FileName << " for output.\n";
+              return;
+            } dumpProfileData(Function, Printer);
+            );
+
+    } else{
+      ++Unchecked;
+    }
+
     clear();
   }
+
+  DEBUG(
+      dbgs() << "BOLT-DEBUG: Number of unchecked functions: " << Unchecked
+             << "\nBOLT-DEBUG: Number of functions that cheked: " << Checked
+             << "\nBOLT-DEBUG: Total number of functions that were processed: "
+             << (Checked + Unchecked) << "\n";
+             );
 
   outs() << "BOLT-INFO: the BB counts and local Edge counts where updated"
          << " based on intraprodecural inference.\n";
 }
 
-void BlockEdgeFrequency::runOnStaleFunctions(BinaryContext &BC, 
-                        std::set<uint64_t> &StaleFunctionsAddresses) {
-  bool numValidProfile = 0;
-  outs() << "BOLT-INFO: starting block and flow edge frequency inference pass\n";
-  outs() << "BOLT-INFO: computing local static infered frequencies\n";  
-  outs() << "BOLT-INFO: based on frequencies gathered by beetle technique.\n";
-  outs() << "BOLT-INFO: processing the file " << opts::BeetleFilename << "\n";
-
-  auto MB = MemoryBuffer::getFileOrSTDIN(opts::BeetleFilename);
-
-  if (auto EC = MB.getError()) {
-    errs() << "BOLT-ERROR: Cannot open " << opts::BeetleFilename << ": "
-            << EC.message() << "\n";
-    exit(EXIT_FAILURE);
-  }
-
-  SBP->parseBeetleProfileFile(std::move(MB.get()), BC, StaleFunctionsAddresses);
-
-  outs() << "BOLT-INFO: the BB counts and local Edge counts where updated"
-         << " based on beetle approach.\n";
-
-  if((opts::WuLarusStaleProfile || opts::VespaStaleProfile) &&
-        StaleFunctionsAddresses.size() > 0 ) {
-      opts::MLBased = (opts::VespaStaleProfile) ? true: false;
-      updateStaleEdgesFrequencies(BC, StaleFunctionsAddresses);
-  }
-
-}
 
 void BlockEdgeFrequency::runOnFunctions(BinaryContext &BC) {
   outs()
@@ -688,7 +880,9 @@ void BlockEdgeFrequency::runOnFunctions(BinaryContext &BC) {
     BinaryBasicBlock &EntryBB = (*Function.begin());
     if (!Function.hasProfile()) {
       if (opts::MLBased && Function.size() != 1) {
-        Function.setExecutionCount(BinaryFunction::COUNT_NO_PROFILE);
+        Function.setExecutionCount(0);
+        Function.clearProfile();
+        Function.unsetProfileMatchRatio();
         continue;
       }
 
